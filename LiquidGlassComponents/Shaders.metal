@@ -34,6 +34,12 @@ float smin(float a, float b, float k) {
     return mix(b, a, h) - k * h * (1.0 - h);
 }
 
+// Schlick's Fresnel approximation
+// F0 = reflectance at normal incidence, cosTheta = dot(view, normal)
+float fresnelSchlick(float cosTheta, float F0) {
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
 vertex VertexOut liquidGlassVertex(uint vertexID [[vertex_id]]) {
     float2 positions[4] = {
         float2(-1.0, -1.0), float2(1.0, -1.0),
@@ -96,9 +102,6 @@ fragment float4 liquidGlassTabBarFragment(
         discard_fragment();
     }
 
-    // === EDGE-ONLY REFRACTION (pixel pulling ONLY at glass borders ~15% from edge) ===
-    float2 distortedUV = uv;
-
     // Define edge zone - only this zone gets distortion
     float edgeZoneWidth = min(glass.glassSize.x, glass.glassSize.y) * 0.15;  // 15% from edge
 
@@ -125,16 +128,22 @@ fragment float4 liquidGlassTabBarFragment(
     // Sample the distorted backdrop
     float4 color = backdropTexture.sample(linearSampler, refractedUV);
 
-    // === REFLECTION COPY in edge zone (sample from OUTSIDE and blend in) ===
+    // === FRESNEL REFLECTION in edge zone ===
     if (edgeProximity > 0.0) {
-        // Sample content from OUTSIDE the glass (further out = stronger reflection)
-        float reflectionOffsetPx = edgeProximity * glass.refractionStrength * 50.0;  // Pixels to offset
+        // cos(theta) decreases toward edges (grazing angle)
+        float cosTheta = 1.0 - edgeProximity;  // center=1, edge=0
+
+        // Fresnel: more reflection at grazing angles (edges)
+        float F0 = 0.08;  // Strong reflectance (polished crystal)
+        float fresnel = fresnelSchlick(cosTheta, F0);
+
+        // Sample content from OUTSIDE the glass
+        float reflectionOffsetPx = edgeProximity * glass.refractionStrength * 50.0;
         float2 reflectionUV = uv + towardEdgeUV * reflectionOffsetPx;
         float4 reflectedColor = backdropTexture.sample(linearSampler, reflectionUV);
 
-        // Blend reflected content into edge zone
-        float copyBlend = pow(edgeProximity, 1.3) * 0.5;
-        color.rgb = mix(color.rgb, reflectedColor.rgb, copyBlend);
+        // Blend using Fresnel (stronger at edges due to physics)
+        color.rgb = mix(color.rgb, reflectedColor.rgb, fresnel * edgeProximity);
     }
 
     // Apply dark bevel at very edge (the angled padding effect - creates depth)
