@@ -81,10 +81,9 @@ fragment float4 liquidGlassTabBarFragment(
         ? length(pixelPos - blob2.position) - blob2.radius
         : 10000.0;
 
-    // Merge blobs with smin
+    // Merge blobs with smin (for blob fill effect)
     float blendK = max(min(blob1.radius, blob2.radius) * 0.8, 20.0);
     float blobSdf = smin(blob1Sdf, blob2Sdf, blendK);
-    float blobInfluence = smoothstep(blob1.radius * 1.5, 0.0, blobSdf);
 
     // Discard outside glass
     if (glassSdf > 1.0) {
@@ -97,35 +96,33 @@ fragment float4 liquidGlassTabBarFragment(
         discard_fragment();
     }
 
-    // === REFRACTION - distort UV based on glass shape and blobs ===
+    // === EDGE-ONLY REFRACTION (pixel pulling ONLY at glass borders ~15% from edge) ===
     float2 distortedUV = uv;
 
-    // Base lens distortion - barrel/pincushion effect (INCREASED)
-    float2 centeredUV = uv - 0.5;
-    float lensStrength = glass.refractionStrength * 0.04;  // 2.5x stronger
-    float edgeDistance = saturate(-glassSdf / 15.0);  // More edge influence
-    distortedUV = centeredUV * (1.0 + edgeDistance * lensStrength) + 0.5;
+    // Define edge zone - only this zone gets distortion
+    float edgeZoneWidth = min(glass.glassSize.x, glass.glassSize.y) * 0.15;  // 15% from edge
 
-    // Blob pulls UV toward its center (liquid magnification effect) - MUCH STRONGER
-    if (blobInfluence > 0.0) {
-        float2 toBlob1 = (blob1.position / glass.viewSize) - uv;
-        float2 toBlob2 = (blob2.position / glass.viewSize) - uv;
+    // edgeProximity: 1.0 at the very edge, 0.0 when past the edge zone (in center)
+    // glassSdf is negative inside, so -glassSdf is positive inside
+    // At edge: glassSdf ≈ 0, so edgeProximity ≈ 1
+    // At edgeZoneWidth inside: glassSdf ≈ -edgeZoneWidth, so edgeProximity ≈ 0
+    float distFromEdge = -glassSdf;  // Distance from edge (positive inside)
+    float edgeProximity = 1.0 - saturate(distFromEdge / edgeZoneWidth);  // 1 at edge, 0 in center
 
-        float w1 = blob1.intensity * saturate(1.0 - blob1Sdf / max(blob1.radius, 1.0));
-        float w2 = blob2.intensity * saturate(1.0 - blob2Sdf / max(blob2.radius, 1.0));
-        float totalWeight = w1 + w2;
+    // Only apply distortion if we're in the edge zone
+    if (edgeProximity > 0.0) {
+        // Direction TOWARD the nearest edge (outward) - to pull content from outside
+        float2 towardEdge = normalize(relativePos + 0.001);
 
-        if (totalWeight > 0.001) {
-            float2 pull = (toBlob1 * w1 + toBlob2 * w2) / totalWeight;
-            distortedUV += pull * blobInfluence * 0.15;  // 3x stronger pull
-        }
+        // Reflection effect: sample from OUTSIDE the glass (beyond the edge)
+        // This pulls external content into the edge zone, creating bevel/reflection look
+        float reflectionStrength = pow(edgeProximity, 1.5) * glass.refractionStrength * 0.04;
+        distortedUV += towardEdge * reflectionStrength;
     }
+    // Center area: distortedUV stays as original uv - no distortion, just frosted glass
 
     // Sample the backdrop with distorted coordinates
-    float4 backdrop = backdropTexture.sample(linearSampler, distortedUV);
-
-    // Start with the distorted backdrop
-    float4 color = backdrop;
+    float4 color = backdropTexture.sample(linearSampler, distortedUV);
 
     // === BLOB FILL (subtle tint inside blob area) ===
     float blobFill = smoothstep(30.0, -10.0, blobSdf);  // Soft edge fill

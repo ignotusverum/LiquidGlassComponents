@@ -44,7 +44,7 @@
 
     id blurFilter = ((id (*)(id, SEL, id))objc_msgSend)(filterClass, filterWithNameSel, @"gaussianBlur");
     if (blurFilter) {
-        [blurFilter setValue:@(blur * 30.0) forKey:@"inputRadius"];
+        [blurFilter setValue:@(blur * 45.0) forKey:@"inputRadius"];  // Increased for heavier frost
     }
 
     // Create saturation filter
@@ -82,7 +82,7 @@
         }
 
         if ([name isEqualToString:@"gaussianBlur"]) {
-            [filter setValue:@(blur * 30.0) forKey:@"inputRadius"];
+            [filter setValue:@(blur * 45.0) forKey:@"inputRadius"];  // Increased for heavier frost
             break;
         }
     }
