@@ -109,20 +109,36 @@ fragment float4 liquidGlassTabBarFragment(
     float distFromEdge = -glassSdf;  // Distance from edge (positive inside)
     float edgeProximity = 1.0 - saturate(distFromEdge / edgeZoneWidth);  // 1 at edge, 0 in center
 
-    // Only apply distortion if we're in the edge zone
+    // Dark bevel zone at very edge (creates "padding under angle" effect)
+    float darkBevelWidth = min(glass.glassSize.x, glass.glassSize.y) * 0.05;  // 5% dark bevel
+    float bevelZone = 1.0 - saturate(distFromEdge / darkBevelWidth);  // 1 at edge, 0 past bevel
+
+    // Direction toward edge in UV space (normalized and scaled properly)
+    float2 towardEdgePixel = normalize(relativePos + 0.001);
+    float2 towardEdgeUV = towardEdgePixel / glass.viewSize;  // Convert to UV space
+
+    // === REFRACTION DISTORTION (bend content like real glass at edges) ===
+    // Pull content from center toward edges (simulates light bending through angled glass)
+    float refractionStrength = pow(edgeProximity, 1.5) * glass.refractionStrength * 30.0;  // Pixels
+    float2 refractedUV = uv - towardEdgeUV * refractionStrength;  // Pull inward (content shifts outward visually)
+
+    // Sample the distorted backdrop
+    float4 color = backdropTexture.sample(linearSampler, refractedUV);
+
+    // === REFLECTION COPY in edge zone (sample from OUTSIDE and blend in) ===
     if (edgeProximity > 0.0) {
-        // Direction TOWARD the nearest edge (outward) - to pull content from outside
-        float2 towardEdge = normalize(relativePos + 0.001);
+        // Sample content from OUTSIDE the glass (further out = stronger reflection)
+        float reflectionOffsetPx = edgeProximity * glass.refractionStrength * 50.0;  // Pixels to offset
+        float2 reflectionUV = uv + towardEdgeUV * reflectionOffsetPx;
+        float4 reflectedColor = backdropTexture.sample(linearSampler, reflectionUV);
 
-        // Reflection effect: sample from OUTSIDE the glass (beyond the edge)
-        // This pulls external content into the edge zone, creating bevel/reflection look
-        float reflectionStrength = pow(edgeProximity, 1.5) * glass.refractionStrength * 0.04;
-        distortedUV += towardEdge * reflectionStrength;
+        // Blend reflected content into edge zone
+        float copyBlend = pow(edgeProximity, 1.3) * 0.5;
+        color.rgb = mix(color.rgb, reflectedColor.rgb, copyBlend);
     }
-    // Center area: distortedUV stays as original uv - no distortion, just frosted glass
 
-    // Sample the backdrop with distorted coordinates
-    float4 color = backdropTexture.sample(linearSampler, distortedUV);
+    // Apply dark bevel at very edge (the angled padding effect - creates depth)
+    color.rgb *= (1.0 - pow(bevelZone, 1.3) * 0.55);
 
     // === BLOB FILL (subtle tint inside blob area) ===
     float blobFill = smoothstep(30.0, -10.0, blobSdf);  // Soft edge fill
