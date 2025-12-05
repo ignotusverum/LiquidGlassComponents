@@ -67,7 +67,7 @@ struct LiquidGlassConfiguration {
     // MARK: - Refraction (Metal)
 
     /// Refraction distortion strength (controls edge pixel pulling)
-    var refractionStrength: CGFloat = 1.0
+    var refractionStrength: CGFloat = 5.0
 
     /// Specular highlight intensity on blobs
     var specularIntensity: CGFloat = 0.6

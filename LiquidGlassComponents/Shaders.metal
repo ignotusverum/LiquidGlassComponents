@@ -35,9 +35,15 @@ float smin(float a, float b, float k) {
 }
 
 // Schlick's Fresnel approximation
-// F0 = reflectance at normal incidence, cosTheta = dot(view, normal)
 float fresnelSchlick(float cosTheta, float F0) {
     return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// Snell's Law refraction
+float snellRefract(float sinTheta1, float n1, float n2) {
+    float ratio = n1 / n2;
+    float sinTheta2 = ratio * sinTheta1;
+    return clamp(sinTheta2, -1.0, 1.0);
 }
 
 vertex VertexOut liquidGlassVertex(uint vertexID [[vertex_id]]) {
@@ -56,15 +62,9 @@ vertex VertexOut liquidGlassVertex(uint vertexID [[vertex_id]]) {
     return out;
 }
 
-/**
- Tab bar glass with dual blob merging
-
- SIMPLE: No blur loop. Backdrop is pre-blurred by CABackdropLayer.
- Just: distort UV → sample once → add specular → add edges
- */
 fragment float4 liquidGlassTabBarFragment(
     VertexOut in [[stage_in]],
-    texture2d<float> backdropTexture [[texture(0)]],  // Pre-blurred by CABackdropLayer
+    texture2d<float> backdropTexture [[texture(0)]],
     sampler linearSampler [[sampler(0)]],
     constant GlassUniforms &glass [[buffer(0)]],
     constant BlobUniforms &blob1 [[buffer(1)]],
@@ -87,7 +87,6 @@ fragment float4 liquidGlassTabBarFragment(
         ? length(pixelPos - blob2.position) - blob2.radius
         : 10000.0;
 
-    // Merge blobs with smin (for blob fill effect)
     float blendK = max(min(blob1.radius, blob2.radius) * 0.8, 20.0);
     float blobSdf = smin(blob1Sdf, blob2Sdf, blendK);
 
@@ -102,72 +101,109 @@ fragment float4 liquidGlassTabBarFragment(
         discard_fragment();
     }
 
-    // Define edge zone - only this zone gets distortion
-    float edgeZoneWidth = min(glass.glassSize.x, glass.glassSize.y) * 0.15;  // 15% from edge
+    // Distance from edge (positive inside glass)
+    float distFromEdge = -glassSdf;
+    float maxDist = min(halfSize.x, halfSize.y);
 
-    // edgeProximity: 1.0 at the very edge, 0.0 when past the edge zone (in center)
-    // glassSdf is negative inside, so -glassSdf is positive inside
-    // At edge: glassSdf ≈ 0, so edgeProximity ≈ 1
-    // At edgeZoneWidth inside: glassSdf ≈ -edgeZoneWidth, so edgeProximity ≈ 0
-    float distFromEdge = -glassSdf;  // Distance from edge (positive inside)
-    float edgeProximity = 1.0 - saturate(distFromEdge / edgeZoneWidth);  // 1 at edge, 0 in center
+    // Zone widths
+    float refractionZoneWidth = maxDist * 0.10;  // 10% - Snell's law zone
+    float reflectionZoneWidth = maxDist * 0.25;  // 25% - Fresnel reflection zone (wider!)
+    float darkBevelWidth = maxDist * 0.05;       // 5% - dark padding
 
-    // Dark bevel zone at very edge (creates "padding under angle" effect)
-    float darkBevelWidth = min(glass.glassSize.x, glass.glassSize.y) * 0.05;  // 5% dark bevel
-    float bevelZone = 1.0 - saturate(distFromEdge / darkBevelWidth);  // 1 at edge, 0 past bevel
+    // Proximity values (1 at edge, 0 toward center)
+    float refractionProximity = 1.0 - saturate(distFromEdge / refractionZoneWidth);
+    float edgeProximity = 1.0 - saturate(distFromEdge / reflectionZoneWidth);
+    float bevelZone = 1.0 - saturate(distFromEdge / darkBevelWidth);
 
-    // Direction toward edge in UV space (normalized and scaled properly)
+    // Direction toward edge
     float2 towardEdgePixel = normalize(relativePos + 0.001);
-    float2 towardEdgeUV = towardEdgePixel / glass.viewSize;  // Convert to UV space
+    float2 towardEdgeUV = towardEdgePixel / glass.viewSize;
 
-    // === REFRACTION DISTORTION (bend content like real glass at edges) ===
-    // Pull content from center toward edges (simulates light bending through angled glass)
-    float refractionStrength = pow(edgeProximity, 1.5) * glass.refractionStrength * 30.0;  // Pixels
-    float2 refractedUV = uv - towardEdgeUV * refractionStrength;  // Pull inward (content shifts outward visually)
+    // === SNELL'S LAW REFRACTION ===
+    float n1 = 1.0;  // Air
+    float n2 = 1.5;  // Glass
 
-    // Sample the distorted backdrop
+    float incidentAngle = refractionProximity * 1.4;
+    float sinTheta1 = sin(incidentAngle);
+    float sinTheta2 = snellRefract(sinTheta1, n1, n2);
+    float theta2 = asin(sinTheta2);
+    float bendAmount = incidentAngle - theta2;
+
+    float refractionStrength = bendAmount * glass.refractionStrength * 25.0;
+    float2 refractedUV = uv - towardEdgeUV * refractionStrength;
+    refractedUV = clamp(refractedUV, 0.001, 0.999);
+
     float4 color = backdropTexture.sample(linearSampler, refractedUV);
 
-    // === FRESNEL REFLECTION in edge zone ===
-    if (edgeProximity > 0.0) {
-        // cos(theta) decreases toward edges (grazing angle)
-        float cosTheta = 1.0 - edgeProximity;  // center=1, edge=0
-
-        // Fresnel: more reflection at grazing angles (edges)
-        float F0 = 0.08;  // Strong reflectance (polished crystal)
+    // === FRESNEL REFLECTION - EDGE MIRROR ===
+    // When content is within 20% of edge, show flipped reflection FROM that edge
+    if (edgeProximity > 0.01) {
+        float cosTheta = 1.0 - edgeProximity;
+        float F0 = 0.25;
         float fresnel = fresnelSchlick(cosTheta, F0);
 
-        // Sample content from OUTSIDE the glass
-        float reflectionOffsetPx = edgeProximity * glass.refractionStrength * 50.0;
-        float2 reflectionUV = uv + towardEdgeUV * reflectionOffsetPx;
-        float4 reflectedColor = backdropTexture.sample(linearSampler, reflectionUV);
+        // Sample from a position reflected across the edge
+        // This creates the "reflection coming from the edge" effect
+        float2 reflectionUV = uv;
 
-        // Blend using Fresnel (stronger at edges due to physics)
-        color.rgb = mix(color.rgb, reflectedColor.rgb, fresnel * edgeProximity);
+        // Offset amount - how far "past the edge" to sample (simulates mirror)
+        float offsetAmount = edgeProximity * 0.4;
+
+        if (abs(towardEdgePixel.x) > abs(towardEdgePixel.y)) {
+            // Near LEFT or RIGHT edge
+            if (towardEdgePixel.x > 0.0) {
+                // RIGHT edge: flip and offset from right
+                reflectionUV.x = 1.0 + (1.0 - uv.x) * offsetAmount;
+            } else {
+                // LEFT edge: flip and offset from left
+                reflectionUV.x = -uv.x * offsetAmount;
+            }
+        } else {
+            // Near TOP or BOTTOM edge
+            if (towardEdgePixel.y > 0.0) {
+                // BOTTOM edge: flip and offset from bottom
+                reflectionUV.y = 1.0 + (1.0 - uv.y) * offsetAmount;
+            } else {
+                // TOP edge: flip and offset from top
+                reflectionUV.y = -uv.y * offsetAmount;
+            }
+        }
+
+        // Clamp and use mirror-style sampling (abs to fold back into texture)
+        reflectionUV.x = abs(reflectionUV.x);
+        reflectionUV.y = abs(reflectionUV.y);
+        if (reflectionUV.x > 1.0) reflectionUV.x = 2.0 - reflectionUV.x;
+        if (reflectionUV.y > 1.0) reflectionUV.y = 2.0 - reflectionUV.y;
+        reflectionUV = clamp(reflectionUV, 0.001, 0.999);
+
+        float4 mirroredColor = backdropTexture.sample(linearSampler, reflectionUV);
+
+        // Stronger reflection at grazing angles (edges)
+        float reflectionStrength = fresnel * pow(edgeProximity, 0.7) * 0.7;
+        color.rgb = mix(color.rgb, mirroredColor.rgb, reflectionStrength);
+
+        // Subtle specular highlight
+        color.rgb += fresnel * edgeProximity * 0.08;
     }
 
-    // Apply dark bevel at very edge (the angled padding effect - creates depth)
+    // === DARK BEVEL (entry refraction darkening) ===
     color.rgb *= (1.0 - pow(bevelZone, 1.3) * 0.55);
 
-    // === BLOB FILL (subtle tint inside blob area) ===
-    float blobFill = smoothstep(30.0, -10.0, blobSdf);  // Soft edge fill
-    color.rgb = mix(color.rgb, color.rgb + float3(0.15, 0.15, 0.2), blobFill * 0.4);  // Subtle blue-white tint
+    // === BLOB FILL ===
+    float blobFill = smoothstep(30.0, -10.0, blobSdf);
+    color.rgb = mix(color.rgb, color.rgb + float3(0.15, 0.15, 0.2), blobFill * 0.4);
 
-    // === SPECULAR HIGHLIGHTS (blob glow) - MUCH STRONGER ===
+    // === SPECULAR HIGHLIGHTS ===
     float specular = 0.0;
 
     if (blob1.radius > 0.0) {
         float d1 = length(pixelPos - blob1.position) / blob1.radius;
         float blob1Glow = saturate(1.0 - d1);
 
-        // Multi-layer glow for more prominence
-        specular += pow(blob1Glow, 2.0) * blob1.intensity * 0.5;   // Broad glow
-        specular += pow(blob1Glow, 4.0) * blob1.intensity * 0.8;   // Medium glow
-
-        // Bright white highlight at blob center
+        specular += pow(blob1Glow, 2.0) * blob1.intensity * 0.5;
+        specular += pow(blob1Glow, 4.0) * blob1.intensity * 0.8;
         color.rgb += float3(1.0) * pow(blob1Glow, 3.0) * 0.6;
 
-        // Rim highlight at blob edge
         float rim1 = smoothstep(0.7, 1.0, blob1Glow) * smoothstep(1.0, 0.85, blob1Glow);
         color.rgb += float3(1.0) * rim1 * 0.4;
     }
@@ -175,29 +211,23 @@ fragment float4 liquidGlassTabBarFragment(
         float d2 = length(pixelPos - blob2.position) / blob2.radius;
         float blob2Glow = saturate(1.0 - d2);
 
-        // Multi-layer glow for more prominence
         specular += pow(blob2Glow, 2.0) * blob2.intensity * 0.5;
         specular += pow(blob2Glow, 4.0) * blob2.intensity * 0.8;
-
-        // Bright white highlight at blob center
         color.rgb += float3(1.0) * pow(blob2Glow, 3.0) * 0.6;
 
-        // Rim highlight at blob edge
         float rim2 = smoothstep(0.7, 1.0, blob2Glow) * smoothstep(1.0, 0.85, blob2Glow);
         color.rgb += float3(1.0) * rim2 * 0.4;
     }
 
-    // Add specular shine (increased)
     color.rgb += specular * glass.specularIntensity * 0.6;
 
-    // === EDGE HIGHLIGHT (subtle white border glow) ===
+    // === EDGE HIGHLIGHT ===
     float edgeMask = smoothstep(6.0, 0.0, abs(glassSdf));
     color.rgb += float3(1.0) * edgeMask * 0.15;
 
-    // === BORDER (thin bright line at edge) ===
+    // === BORDER ===
     float border = smoothstep(2.0, 0.0, abs(glassSdf)) - smoothstep(1.0, 0.0, abs(glassSdf));
     color.rgb += float3(1.0) * border * 0.5;
 
-    // Apply alpha for anti-aliasing at glass edges
     return float4(color.rgb, alpha);
 }
