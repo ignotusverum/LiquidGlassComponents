@@ -65,6 +65,14 @@ fragment float4 liquidGlassTabBarFragment(
     constant BlobUniforms &blob1 [[buffer(1)]],
     constant BlobUniforms &blob2 [[buffer(2)]]
 ) {
+    // ==========================================================================
+    // TUNABLE PARAMETERS
+    // ==========================================================================
+    const float SMEAR_STRENGTH = 8.0;          // Edge blur/smear intensity (pixels)
+    const float CHROMATIC_STRENGTH = 4.0;      // Rainbow separation amount (pixels)
+    const float REFRACTION_MULTIPLIER = 18.0;  // Overall refraction strength
+    const float PADDING_AMOUNT = 0.08;         // Content pushed inward at edges
+
     float2 pixelPos = in.texCoord * glass.viewSize;
     float2 uv = in.texCoord;
 
@@ -106,15 +114,16 @@ fragment float4 liquidGlassTabBarFragment(
     // Proximity values (1 at edge, 0 toward center)
     float refractionProximity = 1.0 - saturate(distFromEdge / refractionZoneWidth);
 
-    // Direction toward edge
-    float2 towardEdgePixel = normalize(relativePos + 0.001);
-    float2 towardEdgeUV = towardEdgePixel / glass.viewSize;
+    // Direction toward edge (normalized, pixel space)
+    float2 towardEdgeDir = normalize(relativePos + 0.001);
 
-    // === SNELL'S LAW REFRACTION (with smooth easing) ===
+    // Perpendicular direction (for smear along edge, pixel space)
+    float2 tangentDir = float2(-towardEdgeDir.y, towardEdgeDir.x);
+
+    // === SNELL'S LAW REFRACTION ===
     float n1 = 1.0;  // Air
     float n2 = 1.5;  // Glass
 
-    // Eased proximity - strongest at edge, smooth falloff toward center
     float easedProximity = pow(refractionProximity, 0.6);
 
     float incidentAngle = refractionProximity * 1.4;
@@ -123,17 +132,61 @@ fragment float4 liquidGlassTabBarFragment(
     float theta2 = asin(sinTheta2);
     float bendAmount = incidentAngle - theta2;
 
-    // Apply easing to refraction strength for smooth transition (subtle)
-    float refractionStrength = bendAmount * glass.refractionStrength * 12.0 * easedProximity;
-    float2 refractedUV = uv - towardEdgeUV * refractionStrength;
+    float refractionStrength = bendAmount * glass.refractionStrength * REFRACTION_MULTIPLIER * easedProximity;
+    float2 baseRefractedUV = uv - (towardEdgeDir / glass.viewSize) * refractionStrength;
 
-    // === EDGE PADDING (content pushed inward, eased) ===
-    float paddingAmount = easedProximity * 0.10;
-    refractedUV -= towardEdgeUV * paddingAmount;
+    // === EDGE PADDING ===
+    baseRefractedUV -= (towardEdgeDir / glass.viewSize) * PADDING_AMOUNT * easedProximity;
 
-    refractedUV = clamp(refractedUV, 0.001, 0.999);
+    // ==========================================================================
+    // CHROMATIC ABERRATION (Rainbow effect)
+    // Different wavelengths refract at different angles through glass
+    // Red bends least, Blue bends most (dispersion)
+    // ==========================================================================
+    float chromatic = easedProximity * CHROMATIC_STRENGTH;
 
-    float4 color = backdropTexture.sample(linearSampler, refractedUV);
+    // Offset each channel differently - scale by viewSize for proper pixel offset
+    float2 chromaticOffset = towardEdgeDir * chromatic / glass.viewSize;
+    float2 redUV   = baseRefractedUV + chromaticOffset;
+    float2 greenUV = baseRefractedUV;
+    float2 blueUV  = baseRefractedUV - chromaticOffset;
+
+    // ==========================================================================
+    // EDGE SMEAR / DIRECTIONAL BLUR
+    // Content gets stretched along the edge at steep angles
+    // ==========================================================================
+    float smearAmount = easedProximity * SMEAR_STRENGTH;
+
+    // Sample multiple times along tangent direction and average
+    float3 finalColor = float3(0.0);
+
+    // 5-tap blur along edge tangent + chromatic aberration
+    const int SAMPLES = 5;
+    float weights[5] = { 0.1, 0.2, 0.4, 0.2, 0.1 };  // Gaussian-ish weights
+
+    for (int i = 0; i < SAMPLES; i++) {
+        float offset = (float(i) - 2.0) * smearAmount;  // -2, -1, 0, 1, 2
+        float2 smearOffset = tangentDir * offset / glass.viewSize;
+
+        // Sample each color channel at its chromatic offset + smear offset
+        float2 rUV = clamp(redUV   + smearOffset, 0.001, 0.999);
+        float2 gUV = clamp(greenUV + smearOffset, 0.001, 0.999);
+        float2 bUV = clamp(blueUV  + smearOffset, 0.001, 0.999);
+
+        float r = backdropTexture.sample(linearSampler, rUV).r;
+        float g = backdropTexture.sample(linearSampler, gUV).g;
+        float b = backdropTexture.sample(linearSampler, bUV).b;
+
+        finalColor += float3(r, g, b) * weights[i];
+    }
+
+    float4 color = float4(finalColor, 1.0);
+
+    // ==========================================================================
+    // FRESNEL WHITE HIGHLIGHT at edges
+    // ==========================================================================
+    float fresnelHighlight = pow(easedProximity, 2.5) * 0.15;
+    color.rgb += float3(1.0) * fresnelHighlight;
 
     // === BLOB FILL ===
     float blobFill = smoothstep(30.0, -10.0, blobSdf);
