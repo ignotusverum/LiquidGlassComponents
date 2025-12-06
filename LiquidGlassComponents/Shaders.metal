@@ -105,10 +105,10 @@ fragment float4 liquidGlassTabBarFragment(
     float distFromEdge = -glassSdf;
     float maxDist = min(halfSize.x, halfSize.y);
 
-    // Zone widths - INCREASED for visibility
-    float refractionZoneWidth = maxDist * 0.25;  // 25% - Snell's law zone (was 10%)
+    // Zone widths
+    float refractionZoneWidth = maxDist * 0.55;
     float reflectionZoneWidth = maxDist * 0.50;  // 50% - Fresnel reflection zone (was 25%)
-    float darkBevelWidth = maxDist * 0.08;       // 8% - dark padding
+    float darkBevelWidth = maxDist * 0.045;       // 8% - dark padding
 
     // Proximity values (1 at edge, 0 toward center)
     float refractionProximity = 1.0 - saturate(distFromEdge / refractionZoneWidth);
@@ -119,9 +119,12 @@ fragment float4 liquidGlassTabBarFragment(
     float2 towardEdgePixel = normalize(relativePos + 0.001);
     float2 towardEdgeUV = towardEdgePixel / glass.viewSize;
 
-    // === SNELL'S LAW REFRACTION ===
+    // === SNELL'S LAW REFRACTION (with smooth easing) ===
     float n1 = 1.0;  // Air
     float n2 = 1.5;  // Glass
+
+    // Eased proximity - strongest at edge, smooth falloff toward center
+    float easedProximity = pow(refractionProximity, 0.6);
 
     float incidentAngle = refractionProximity * 1.4;
     float sinTheta1 = sin(incidentAngle);
@@ -129,8 +132,14 @@ fragment float4 liquidGlassTabBarFragment(
     float theta2 = asin(sinTheta2);
     float bendAmount = incidentAngle - theta2;
 
-    float refractionStrength = bendAmount * glass.refractionStrength * 25.0;
+    // Apply easing to refraction strength for smooth transition
+    float refractionStrength = bendAmount * glass.refractionStrength * 25.0 * easedProximity;
     float2 refractedUV = uv - towardEdgeUV * refractionStrength;
+
+    // === EDGE PADDING (content pushed inward, eased) ===
+    float paddingAmount = easedProximity * 0.10;
+    refractedUV -= towardEdgeUV * paddingAmount;
+
     refractedUV = clamp(refractedUV, 0.001, 0.999);
 
     float4 color = backdropTexture.sample(linearSampler, refractedUV);
