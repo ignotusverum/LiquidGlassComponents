@@ -34,11 +34,6 @@ float smin(float a, float b, float k) {
     return mix(b, a, h) - k * h * (1.0 - h);
 }
 
-// Schlick's Fresnel approximation
-float fresnelSchlick(float cosTheta, float F0) {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
-}
-
 // Snell's Law refraction
 float snellRefract(float sinTheta1, float n1, float n2) {
     float ratio = n1 / n2;
@@ -107,13 +102,9 @@ fragment float4 liquidGlassTabBarFragment(
 
     // Zone widths
     float refractionZoneWidth = maxDist * 0.55;
-    float reflectionZoneWidth = maxDist * 0.50;  // 50% - Fresnel reflection zone (was 25%)
-    float darkBevelWidth = maxDist * 0.045;       // 8% - dark padding
 
     // Proximity values (1 at edge, 0 toward center)
     float refractionProximity = 1.0 - saturate(distFromEdge / refractionZoneWidth);
-    float edgeProximity = 1.0 - saturate(distFromEdge / reflectionZoneWidth);
-    float bevelZone = 1.0 - saturate(distFromEdge / darkBevelWidth);
 
     // Direction toward edge
     float2 towardEdgePixel = normalize(relativePos + 0.001);
@@ -132,8 +123,8 @@ fragment float4 liquidGlassTabBarFragment(
     float theta2 = asin(sinTheta2);
     float bendAmount = incidentAngle - theta2;
 
-    // Apply easing to refraction strength for smooth transition
-    float refractionStrength = bendAmount * glass.refractionStrength * 25.0 * easedProximity;
+    // Apply easing to refraction strength for smooth transition (subtle)
+    float refractionStrength = bendAmount * glass.refractionStrength * 12.0 * easedProximity;
     float2 refractedUV = uv - towardEdgeUV * refractionStrength;
 
     // === EDGE PADDING (content pushed inward, eased) ===
@@ -143,58 +134,6 @@ fragment float4 liquidGlassTabBarFragment(
     refractedUV = clamp(refractedUV, 0.001, 0.999);
 
     float4 color = backdropTexture.sample(linearSampler, refractedUV);
-
-    // === FRESNEL REFLECTION - EDGE MIRROR ===
-    if (edgeProximity > 0.01) {
-        float cosTheta = 1.0 - edgeProximity;
-        float F0 = 0.28;  // Slightly higher base reflectance
-        float fresnel = fresnelSchlick(cosTheta, F0);
-
-        // Sample from a position reflected across the edge
-        float2 reflectionUV = uv;
-
-        // Offset amount - how far "past the edge" to sample (simulates mirror)
-        float offsetAmount = edgeProximity * 0.45;  // Slightly stronger
-
-        if (abs(towardEdgePixel.x) > abs(towardEdgePixel.y)) {
-            // Near LEFT or RIGHT edge
-            if (towardEdgePixel.x > 0.0) {
-                // RIGHT edge: flip and offset from right
-                reflectionUV.x = 1.0 + (1.0 - uv.x) * offsetAmount;
-            } else {
-                // LEFT edge: flip and offset from left
-                reflectionUV.x = -uv.x * offsetAmount;
-            }
-        } else {
-            // Near TOP or BOTTOM edge
-            if (towardEdgePixel.y > 0.0) {
-                // BOTTOM edge: flip and offset from bottom
-                reflectionUV.y = 1.0 + (1.0 - uv.y) * offsetAmount;
-            } else {
-                // TOP edge: flip and offset from top
-                reflectionUV.y = -uv.y * offsetAmount;
-            }
-        }
-
-        // Clamp and use mirror-style sampling (abs to fold back into texture)
-        reflectionUV.x = abs(reflectionUV.x);
-        reflectionUV.y = abs(reflectionUV.y);
-        if (reflectionUV.x > 1.0) reflectionUV.x = 2.0 - reflectionUV.x;
-        if (reflectionUV.y > 1.0) reflectionUV.y = 2.0 - reflectionUV.y;
-        reflectionUV = clamp(reflectionUV, 0.001, 0.999);
-
-        float4 mirroredColor = backdropTexture.sample(linearSampler, reflectionUV);
-
-        // Subtle reflection at grazing angles (edges)
-        float reflectionStrength = fresnel * pow(edgeProximity, 0.65) * 0.75;
-        color.rgb = mix(color.rgb, mirroredColor.rgb, reflectionStrength);
-
-        // Subtle specular highlight
-        color.rgb += fresnel * edgeProximity * 0.10;
-    }
-
-    // === DARK BEVEL (entry refraction darkening) ===
-    color.rgb *= (1.0 - pow(bevelZone, 1.3) * 0.55);
 
     // === BLOB FILL ===
     float blobFill = smoothstep(30.0, -10.0, blobSdf);

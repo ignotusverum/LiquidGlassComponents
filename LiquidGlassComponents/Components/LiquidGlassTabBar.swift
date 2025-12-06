@@ -420,7 +420,7 @@ final class LiquidGlassTabBar: UIView {
         // Update blob mask for highlight layer (every frame)
         updateBlobMask()
 
-        // Capture backdrop every frame using IOSurface-backed context
+        // Capture backdrop every frame
         captureBackdropSnapshot()
     }
 
