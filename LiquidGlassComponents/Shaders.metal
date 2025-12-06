@@ -105,10 +105,10 @@ fragment float4 liquidGlassTabBarFragment(
     float distFromEdge = -glassSdf;
     float maxDist = min(halfSize.x, halfSize.y);
 
-    // Zone widths
-    float refractionZoneWidth = maxDist * 0.10;  // 10% - Snell's law zone
-    float reflectionZoneWidth = maxDist * 0.25;  // 25% - Fresnel reflection zone (wider!)
-    float darkBevelWidth = maxDist * 0.05;       // 5% - dark padding
+    // Zone widths - INCREASED for visibility
+    float refractionZoneWidth = maxDist * 0.25;  // 25% - Snell's law zone (was 10%)
+    float reflectionZoneWidth = maxDist * 0.50;  // 50% - Fresnel reflection zone (was 25%)
+    float darkBevelWidth = maxDist * 0.08;       // 8% - dark padding
 
     // Proximity values (1 at edge, 0 toward center)
     float refractionProximity = 1.0 - saturate(distFromEdge / refractionZoneWidth);
@@ -136,18 +136,16 @@ fragment float4 liquidGlassTabBarFragment(
     float4 color = backdropTexture.sample(linearSampler, refractedUV);
 
     // === FRESNEL REFLECTION - EDGE MIRROR ===
-    // When content is within 20% of edge, show flipped reflection FROM that edge
     if (edgeProximity > 0.01) {
         float cosTheta = 1.0 - edgeProximity;
-        float F0 = 0.25;
+        float F0 = 0.28;  // Slightly higher base reflectance
         float fresnel = fresnelSchlick(cosTheta, F0);
 
         // Sample from a position reflected across the edge
-        // This creates the "reflection coming from the edge" effect
         float2 reflectionUV = uv;
 
         // Offset amount - how far "past the edge" to sample (simulates mirror)
-        float offsetAmount = edgeProximity * 0.4;
+        float offsetAmount = edgeProximity * 0.45;  // Slightly stronger
 
         if (abs(towardEdgePixel.x) > abs(towardEdgePixel.y)) {
             // Near LEFT or RIGHT edge
@@ -178,12 +176,12 @@ fragment float4 liquidGlassTabBarFragment(
 
         float4 mirroredColor = backdropTexture.sample(linearSampler, reflectionUV);
 
-        // Stronger reflection at grazing angles (edges)
-        float reflectionStrength = fresnel * pow(edgeProximity, 0.7) * 0.7;
+        // Subtle reflection at grazing angles (edges)
+        float reflectionStrength = fresnel * pow(edgeProximity, 0.65) * 0.75;
         color.rgb = mix(color.rgb, mirroredColor.rgb, reflectionStrength);
 
         // Subtle specular highlight
-        color.rgb += fresnel * edgeProximity * 0.08;
+        color.rgb += fresnel * edgeProximity * 0.10;
     }
 
     // === DARK BEVEL (entry refraction darkening) ===
