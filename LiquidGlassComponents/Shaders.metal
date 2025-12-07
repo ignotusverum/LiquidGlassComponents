@@ -17,7 +17,7 @@ struct GlassUniforms {
     float  specularIntensity;
 };
 
-struct BlobUniforms {
+struct SdfUniforms {
     float2 position;
     float2 size;      // half-width, half-height (for pill shape)
     float  intensity;
@@ -82,18 +82,18 @@ float sdSquircle(float2 pos, float2 size, float n) {
 }
 
 /**
- Calculates signed distance to a blob (pill/rounded rect).
+ Calculates signed distance to an SDF shape (pill/rounded rect).
  @param pixelPos Current pixel position
- @param blob Blob uniforms containing position, size, intensity
- @return Signed distance to blob edge
+ @param sdf SDF uniforms containing position, size, intensity
+ @return Signed distance to shape edge
  @note Uses rounded rect with cornerRadius = height/2 for pill shape
  */
-float calculateBlobSdf(float2 pixelPos, constant BlobUniforms &blob) {
-    if (blob.size.y <= 0.0) return 10000.0;
-    float2 pos = pixelPos - blob.position;
+float calculateSdf(float2 pixelPos, constant SdfUniforms &sdf) {
+    if (sdf.size.y <= 0.0) return 10000.0;
+    float2 pos = pixelPos - sdf.position;
     // Pill shape: corner radius = half-height
-    float cornerRadius = blob.size.y;
-    return sdRoundedRect(pos, blob.size, cornerRadius);
+    float cornerRadius = sdf.size.y;
+    return sdRoundedRect(pos, sdf.size, cornerRadius);
 }
 
 // MARK: - Refraction
@@ -207,31 +207,31 @@ float3 sampleWithChromaticAberration(
     return color;
 }
 
-// MARK: - Blob Effects
+// MARK: - SDF Effects
 
 /**
- Calculates specular highlights for a blob using Phong-like model.
+ Calculates specular highlights for an SDF shape using Phong-like model.
  @param pixelPos Current pixel position
- @param blob Blob uniforms
+ @param sdfShape SDF uniforms
  @param specular Output: accumulated specular intensity
- @return RGB color contribution from this blob
+ @return RGB color contribution from this shape
  @note Uses layered specular with different exponents for varied shine.
        Phong model: I = ks × (R·V)^n. Higher n = tighter highlights.
        Enhanced for pill shape with bolder visibility.
  */
-float3 calculateBlobSpecular(float2 pixelPos, constant BlobUniforms &blob, thread float &specular) {
-    if (blob.size.y <= 0.0) return float3(0.0);
+float3 calculateSdfSpecular(float2 pixelPos, constant SdfUniforms &sdfShape, thread float &specular) {
+    if (sdfShape.size.y <= 0.0) return float3(0.0);
 
     // Use rounded rect SDF for pill shape
-    float2 pos = pixelPos - blob.position;
-    float cornerRadius = blob.size.y;
-    float sdf = sdRoundedRect(pos, blob.size, cornerRadius);
-    float normalizedDist = sdf / min(blob.size.x, blob.size.y);
+    float2 pos = pixelPos - sdfShape.position;
+    float cornerRadius = sdfShape.size.y;
+    float sdf = sdRoundedRect(pos, sdfShape.size, cornerRadius);
+    float normalizedDist = sdf / min(sdfShape.size.x, sdfShape.size.y);
     float glow = saturate(1.0 - normalizedDist - 1.0);
 
     // Enhanced specular layers for bolder appearance
-    specular += pow(glow, 1.5) * blob.intensity * 0.7;
-    specular += pow(glow, 3.0) * blob.intensity * 1.0;
+    specular += pow(glow, 1.5) * sdfShape.intensity * 0.7;
+    specular += pow(glow, 3.0) * sdfShape.intensity * 1.0;
 
     float3 color = float3(1.0) * pow(glow, 2.0) * 0.8;
 
@@ -243,16 +243,16 @@ float3 calculateBlobSpecular(float2 pixelPos, constant BlobUniforms &blob, threa
 }
 
 /**
- Applies blob fill tint to color for bold visibility.
+ Applies SDF fill tint to color for bold visibility.
  @param color Input color
- @param blobSdf Distance to blob
+ @param sdfDist Distance to SDF shape
  @return Tinted color
  @note Uses smoothstep for Hermite interpolation: 3t² - 2t³
        Enhanced for bolder appearance with sharper transition.
  */
-float3 applyBlobFill(float3 color, float blobSdf) {
+float3 applySdfFill(float3 color, float sdfDist) {
     // Sharper transition for more defined edge
-    float fill = smoothstep(10.0, -5.0, blobSdf);
+    float fill = smoothstep(10.0, -5.0, sdfDist);
     // Stronger tint for bold visibility
     float3 tint = float3(0.2, 0.2, 0.3);
     return mix(color, color + tint, fill * 0.5);
@@ -335,8 +335,8 @@ fragment float4 liquidGlassTabBarFragment(
     texture2d<float> backdropTexture [[texture(0)]],
     sampler linearSampler [[sampler(0)]],
     constant GlassUniforms &glass [[buffer(0)]],
-    constant BlobUniforms &blob1 [[buffer(1)]],
-    constant BlobUniforms &blob2 [[buffer(2)]],
+    constant SdfUniforms &sdf1 [[buffer(1)]],
+    constant SdfUniforms &sdf2 [[buffer(2)]],
     constant TabUniforms &tabs [[buffer(3)]]
 ) {
     const float kSmearStrength = 8.0;
@@ -353,36 +353,36 @@ fragment float4 liquidGlassTabBarFragment(
     float2 halfSize = glass.glassSize * 0.5;
     float glassSdf = sdRoundedRect(relativePos, halfSize, glass.cornerRadius);
 
-    // Calculate blob SDFs BEFORE discard check (blob can overflow outside glass)
-    float blob1Sdf = calculateBlobSdf(pixelPos, blob1);
-    float blob2Sdf = calculateBlobSdf(pixelPos, blob2);
-    float blendK = max(min(blob1.size.y, blob2.size.y) * 0.8, 20.0);
-    float blobSdf = smin(blob1Sdf, blob2Sdf, blendK);
+    // Check if SDF effects are enabled (non-zero size)
+    bool sdfEnabled = sdf1.size.y > 0.0 || sdf2.size.y > 0.0;
+
+    float sdfDist = 10000.0;  // Far away by default (disabled)
+    if (sdfEnabled) {
+        float sdf1Dist = calculateSdf(pixelPos, sdf1);
+        float sdf2Dist = calculateSdf(pixelPos, sdf2);
+        float blendK = max(min(sdf1.size.y, sdf2.size.y) * 0.8, 20.0);
+        sdfDist = smin(sdf1Dist, sdf2Dist, blendK);
+    }
 
     // Check regions
     bool insideGlass = glassSdf < 1.0;
-    bool insideBlob = blobSdf < 0.0;
+    bool insideSdf = sdfEnabled && sdfDist < 0.0;
 
-    // Discard only if outside BOTH glass and blob
-    if (!insideGlass && !insideBlob) {
+    // Discard if outside glass (and outside SDF if enabled)
+    if (!insideGlass && !insideSdf) {
         discard_fragment();
     }
 
-    // Handle blob overflow region (outside glass, inside blob)
-    if (!insideGlass && insideBlob) {
-        // Sample backdrop without refraction effects
+    // Handle SDF overflow region (outside glass, inside SDF)
+    if (!insideGlass && insideSdf) {
         float3 color = backdropTexture.sample(linearSampler, uv).rgb;
-
-        // Apply blob fill and specular (no glass effects)
-        color = applyBlobFill(color, blobSdf);
+        color = applySdfFill(color, sdfDist);
         float specular = 0.0;
-        color += calculateBlobSpecular(pixelPos, blob1, specular);
-        color += calculateBlobSpecular(pixelPos, blob2, specular);
+        color += calculateSdfSpecular(pixelPos, sdf1, specular);
+        color += calculateSdfSpecular(pixelPos, sdf2, specular);
         color += specular * glass.specularIntensity * 0.6;
-
-        // Blob alpha based on distance (soft edge)
-        float blobAlpha = saturate(-blobSdf * 8.0);
-        return float4(color, blobAlpha);
+        float sdfAlpha = saturate(-sdfDist * 8.0);
+        return float4(color, sdfAlpha);
     }
 
     // Normal glass rendering (inside glass bounds)
@@ -419,15 +419,58 @@ fragment float4 liquidGlassTabBarFragment(
     // Edge effects
     color += calculateEdgeEffects(glassSdf, easedProximity);
 
-    // Unselected tab fills (gray tint for non-selected tabs)
-    color = applyUnselectedFills(color, pixelPos, tabs);
-
-    // Blob effects (selected tab)
-    color = applyBlobFill(color, blobSdf);
-    float specular = 0.0;
-    color += calculateBlobSpecular(pixelPos, blob1, specular);
-    color += calculateBlobSpecular(pixelPos, blob2, specular);
-    color += specular * glass.specularIntensity * 0.6;
+    // Only apply SDF and tab effects if enabled
+    if (sdfEnabled) {
+        color = applyUnselectedFills(color, pixelPos, tabs);
+        color = applySdfFill(color, sdfDist);
+        float specular = 0.0;
+        color += calculateSdfSpecular(pixelPos, sdf1, specular);
+        color += calculateSdfSpecular(pixelPos, sdf2, specular);
+        color += specular * glass.specularIntensity * 0.6;
+    }
 
     return float4(color, alpha);
+}
+
+// MARK: - SDF Container Fragment Shader
+
+/**
+ Standalone SDF container shader - renders SDF shapes without glass refraction.
+ Use this for container components that need SDF highlight effects.
+ */
+fragment float4 liquidGlassSdfFragment(
+    VertexOut in [[stage_in]],
+    texture2d<float> backdropTexture [[texture(0)]],
+    sampler linearSampler [[sampler(0)]],
+    constant GlassUniforms &glass [[buffer(0)]],
+    constant SdfUniforms &sdf1 [[buffer(1)]],
+    constant SdfUniforms &sdf2 [[buffer(2)]]
+) {
+    float2 pixelPos = in.texCoord * glass.viewSize;
+    float2 uv = in.texCoord;
+
+    // Calculate SDF distances
+    float sdf1Dist = calculateSdf(pixelPos, sdf1);
+    float sdf2Dist = calculateSdf(pixelPos, sdf2);
+    float blendK = max(min(sdf1.size.y, sdf2.size.y) * 0.8, 20.0);
+    float sdfDist = smin(sdf1Dist, sdf2Dist, blendK);
+
+    // Discard if outside SDF
+    if (sdfDist >= 0.0) {
+        discard_fragment();
+    }
+
+    // Sample backdrop
+    float3 color = backdropTexture.sample(linearSampler, uv).rgb;
+
+    // Apply SDF fill and specular
+    color = applySdfFill(color, sdfDist);
+    float specular = 0.0;
+    color += calculateSdfSpecular(pixelPos, sdf1, specular);
+    color += calculateSdfSpecular(pixelPos, sdf2, specular);
+    color += specular * glass.specularIntensity * 0.6;
+
+    // SDF alpha based on distance (soft edge)
+    float sdfAlpha = saturate(-sdfDist * 8.0);
+    return float4(color, sdfAlpha);
 }

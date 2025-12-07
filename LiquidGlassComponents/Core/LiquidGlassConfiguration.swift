@@ -26,8 +26,8 @@ struct GlassUniforms {
     }
 }
 
-/// Matches BlobUniforms in Shaders.metal
-struct BlobUniforms {
+/// Matches SdfUniforms in Shaders.metal
+struct SdfUniforms {
     var position: SIMD2<Float>
     var size: SIMD2<Float>     // half-width, half-height (for pill shape)
     var intensity: Float
@@ -103,19 +103,19 @@ struct LiquidGlassConfiguration {
     /// Refraction distortion strength (controls edge pixel pulling)
     var refractionStrength: CGFloat = 5.0
 
-    /// Specular highlight intensity on blobs
+    /// Specular highlight intensity on SDF shapes
     var specularIntensity: CGFloat = 0.6
 
-    // MARK: - Blob
+    // MARK: - SDF (Signed Distance Field)
 
-    /// Default blob radius in points
-    var blobRadius: CGFloat = 40
+    /// Default SDF radius in points
+    var sdfRadius: CGFloat = 40
 
-    /// Enable smin blob merging during transitions
-    var enableBlobMerging: Bool = true
+    /// Enable smin SDF merging during transitions
+    var enableSdfMerging: Bool = true
 
-    /// Blob intensity (affects specular brightness)
-    var blobIntensity: CGFloat = 1.0
+    /// SDF intensity (affects specular brightness)
+    var sdfIntensity: CGFloat = 1.0
 
     // MARK: - Squircle Shape
 
@@ -124,11 +124,11 @@ struct LiquidGlassConfiguration {
 
     // MARK: - Bold Visibility
 
-    /// Blob fill opacity for visibility enhancement
-    var blobFillOpacity: CGFloat = 0.25
+    /// SDF fill opacity for visibility enhancement
+    var sdfFillOpacity: CGFloat = 0.25
 
-    /// Blob edge highlight intensity
-    var blobEdgeIntensity: CGFloat = 0.5
+    /// SDF edge highlight intensity
+    var sdfEdgeIntensity: CGFloat = 0.5
 
     // MARK: - Unselected Tab Fill
 
@@ -143,11 +143,11 @@ struct LiquidGlassConfiguration {
 
     // MARK: - Scale Effects (Hover/Press)
 
-    /// Scale factor when blob is pressed
-    var blobPressedScale: CGFloat = 1.15
+    /// Scale factor when SDF is pressed
+    var sdfPressedScale: CGFloat = 1.15
 
-    /// Scale factor when blob is being dragged
-    var blobDragScale: CGFloat = 1.25
+    /// Scale factor when SDF is being dragged
+    var sdfDragScale: CGFloat = 1.25
 
     // MARK: - Shape
 
@@ -187,7 +187,7 @@ struct LiquidGlassConfiguration {
         config.blurIntensity = 0.6
         config.refractionStrength = 0.5
         config.specularIntensity = 0.3
-        config.blobRadius = 30
+        config.sdfRadius = 30
         return config
     }
 
@@ -196,7 +196,7 @@ struct LiquidGlassConfiguration {
         config.blurIntensity = 1.0
         config.refractionStrength = 2.0  // Stronger edge refraction
         config.specularIntensity = 0.8
-        config.blobRadius = 50
+        config.sdfRadius = 50
         return config
     }
 }

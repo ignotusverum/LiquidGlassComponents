@@ -13,8 +13,8 @@ final class LiquidGlassRenderer: NSObject, MTKViewDelegate {
     // MARK: - Uniform Buffers
 
     private var glassUniformsBuffer: MTLBuffer?
-    private var blob1UniformsBuffer: MTLBuffer?
-    private var blob2UniformsBuffer: MTLBuffer?
+    private var sdf1UniformsBuffer: MTLBuffer?
+    private var sdf2UniformsBuffer: MTLBuffer?
     private var tabUniformsBuffer: MTLBuffer?
 
     // MARK: - Textures
@@ -25,8 +25,8 @@ final class LiquidGlassRenderer: NSObject, MTKViewDelegate {
     // MARK: - State
 
     var glassUniforms = GlassUniforms()
-    var blob1Uniforms = BlobUniforms()
-    var blob2Uniforms = BlobUniforms()
+    var sdf1Uniforms = SdfUniforms()
+    var sdf2Uniforms = SdfUniforms()
     var tabUniforms = TabUniforms()
 
     /// Called before each frame to update uniforms
@@ -93,13 +93,13 @@ final class LiquidGlassRenderer: NSObject, MTKViewDelegate {
             options: options
         )
 
-        blob1UniformsBuffer = device.makeBuffer(
-            length: MemoryLayout<BlobUniforms>.size,
+        sdf1UniformsBuffer = device.makeBuffer(
+            length: MemoryLayout<SdfUniforms>.size,
             options: options
         )
 
-        blob2UniformsBuffer = device.makeBuffer(
-            length: MemoryLayout<BlobUniforms>.size,
+        sdf2UniformsBuffer = device.makeBuffer(
+            length: MemoryLayout<SdfUniforms>.size,
             options: options
         )
 
@@ -231,8 +231,8 @@ final class LiquidGlassRenderer: NSObject, MTKViewDelegate {
 
         // Set uniform buffers
         renderEncoder.setFragmentBuffer(glassUniformsBuffer, offset: 0, index: 0)
-        renderEncoder.setFragmentBuffer(blob1UniformsBuffer, offset: 0, index: 1)
-        renderEncoder.setFragmentBuffer(blob2UniformsBuffer, offset: 0, index: 2)
+        renderEncoder.setFragmentBuffer(sdf1UniformsBuffer, offset: 0, index: 1)
+        renderEncoder.setFragmentBuffer(sdf2UniformsBuffer, offset: 0, index: 2)
         renderEncoder.setFragmentBuffer(tabUniformsBuffer, offset: 0, index: 3)
 
         // Draw fullscreen quad (triangle strip, 4 vertices)
@@ -248,12 +248,12 @@ final class LiquidGlassRenderer: NSObject, MTKViewDelegate {
             memcpy(buffer.contents(), &glassUniforms, MemoryLayout<GlassUniforms>.size)
         }
 
-        if let buffer = blob1UniformsBuffer {
-            memcpy(buffer.contents(), &blob1Uniforms, MemoryLayout<BlobUniforms>.size)
+        if let buffer = sdf1UniformsBuffer {
+            memcpy(buffer.contents(), &sdf1Uniforms, MemoryLayout<SdfUniforms>.size)
         }
 
-        if let buffer = blob2UniformsBuffer {
-            memcpy(buffer.contents(), &blob2Uniforms, MemoryLayout<BlobUniforms>.size)
+        if let buffer = sdf2UniformsBuffer {
+            memcpy(buffer.contents(), &sdf2Uniforms, MemoryLayout<SdfUniforms>.size)
         }
 
         if let buffer = tabUniformsBuffer {

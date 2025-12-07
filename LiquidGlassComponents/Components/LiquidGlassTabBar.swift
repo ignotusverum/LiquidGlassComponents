@@ -10,7 +10,7 @@ protocol LiquidGlassTabBarDelegate: AnyObject {
 
 // MARK: - LiquidGlassTabBar
 
-final class LiquidGlassTabBar: UIView {
+final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
     // MARK: - Public Properties
 
@@ -30,18 +30,20 @@ final class LiquidGlassTabBar: UIView {
 
     private var backdropLayer: CALayer?
     private var tintLayer: CALayer!
-    private var metalContainerView: UIView!  // Larger than bounds to allow blob overflow
+    private var metalContainerView: UIView!
     private var metalView: MTKView!
     private var edgeLayer: CAGradientLayer!
-    private var contentView: UIView!
+    private var contentView: UIView!              // Unselected tabs (bottom)
+    private var maskedContentView: UIView!        // Selected tabs (masked by blob)
 
-    // MARK: - Overflow Configuration
+    // MARK: - UIKit Blob (Selection Highlight Mask)
 
-    /// How much the blob can overflow outside the tab bar bounds (in points)
-    private let overflowPadding: CGFloat = 30
-
-    /// Vertical padding so blob fits within bounds at normal scale (4pt top + 4pt bottom)
+    private var blobBackgroundView: UIView!       // Visible gray background
+    private var blobView: UIView!                 // Mask shape for maskedContentView
+    private let blobAnimator = SpringAnimator()
+    private let blobScaleAnimator = ScaleAnimator()
     private let blobVerticalPadding: CGFloat = 8
+    private var maskedTabButtons: [UIButton] = []
 
     // MARK: - IOSurface Texture Pool (GPU-accelerated capture)
 
@@ -54,29 +56,24 @@ final class LiquidGlassTabBar: UIView {
     // MARK: - Animation
 
     private var displayLink: CADisplayLink?
-    private let blob1Animator = SpringAnimator()
-    private let blob2Animator = SpringAnimator()
-    private let blob1RadiusAnimator = RadiusAnimator()
-    private let blob2RadiusAnimator = RadiusAnimator()
-    private let blobScaleAnimator = ScaleAnimator()
 
-    // MARK: - Tab Buttons (Dual Layer for Mask Effect)
+    // MARK: - Tab Buttons
 
-    private var normalTabButtons: [UIButton] = []
-    private var highlightTabButtons: [UIButton] = []
-    private var normalContentView: UIView!
-    private var highlightContentView: UIView!
-    private var highlightMaskLayer: CAShapeLayer!
+    private var tabButtons: [UIButton] = []
 
     // MARK: - Drag State
 
     private var isDragging: Bool = false
-    private var isTransitioning: Bool = false
 
     // MARK: - Double Tap Detection
 
     private var lastTapTime: TimeInterval = 0
     private var lastTappedIndex: Int = -1
+
+    // MARK: - Selection Colors
+
+    private let selectedColor: UIColor = .label
+    private let unselectedColor: UIColor = .secondaryLabel
 
     // MARK: - Initialization
 
@@ -97,7 +94,7 @@ final class LiquidGlassTabBar: UIView {
     // MARK: - Setup
 
     private func setup() {
-        clipsToBounds = false  // Allow blob to overflow outside tab bar
+        clipsToBounds = false
         layer.cornerCurve = .continuous
 
         setupBackdropLayer()
@@ -105,20 +102,18 @@ final class LiquidGlassTabBar: UIView {
         setupMetalView()
         setupEdgeLayer()
         setupContentView()
+        setupMaskedContentView()  // Selected tabs masked by blob
         setupDisplayLink()
         setupGestures()
+
+        // Configure animators
+        blobAnimator.configure(with: configuration)
 
         applyConfiguration()
     }
 
-    private func setupGestures() {
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        addGestureRecognizer(pan)
-    }
-
     private func setupBackdropLayer() {
         guard BackdropLayerWrapper.isAvailable() else {
-            // Fallback: use UIVisualEffectView or solid color
             print("CABackdropLayer not available, using fallback")
             return
         }
@@ -145,20 +140,41 @@ final class LiquidGlassTabBar: UIView {
         layer.addSublayer(tintLayer)
     }
 
+    private func setupMaskedContentView() {
+        // Visible blob background (gray pill)
+        blobBackgroundView = UIView()
+        blobBackgroundView.backgroundColor = UIColor.gray.withAlphaComponent(0.3)
+        blobBackgroundView.layer.cornerCurve = .continuous
+        blobBackgroundView.isUserInteractionEnabled = false
+        addSubview(blobBackgroundView)
+
+        // Blob view acts as mask shape (invisible)
+        blobView = UIView()
+        blobView.backgroundColor = .white  // Solid color for mask
+        blobView.layer.cornerCurve = .continuous
+
+        // Masked container - selected tabs visible through blob mask
+        maskedContentView = UIView()
+        maskedContentView.backgroundColor = .clear
+        maskedContentView.isUserInteractionEnabled = false
+        maskedContentView.mask = blobView  // Blob clips this view
+        addSubview(maskedContentView)
+    }
+
     private func setupMetalView() {
         guard let device = MTLCreateSystemDefaultDevice() else {
             print("Metal not available")
             return
         }
 
-        // Container allows blob to overflow outside tab bar bounds
+        // Container for Metal view
         metalContainerView = UIView()
         metalContainerView.clipsToBounds = false
         metalContainerView.backgroundColor = .clear
         metalContainerView.isUserInteractionEnabled = false
         addSubview(metalContainerView)
 
-        // Metal view fills the container (larger than tab bar)
+        // Metal view
         metalView = MTKView(frame: .zero, device: device)
         metalView.isOpaque = false
         metalView.backgroundColor = .clear
@@ -166,7 +182,8 @@ final class LiquidGlassTabBar: UIView {
         metalView.preferredFramesPerSecond = configuration.preferredFPS
         metalView.isPaused = false
         metalView.enableSetNeedsDisplay = false
-        metalView.clipsToBounds = false  // Allow blob to render outside
+        metalView.clipsToBounds = false
+        metalView.isUserInteractionEnabled = false
 
         renderer = LiquidGlassRenderer(device: device)
         metalView.delegate = renderer
@@ -206,26 +223,33 @@ final class LiquidGlassTabBar: UIView {
     }
 
     private func setupContentView() {
-        // Normal content layer (muted colors, always visible behind)
-        normalContentView = UIView()
-        normalContentView.backgroundColor = .clear
-        addSubview(normalContentView)
-
-        // Highlighted content layer (bright colors, masked by blob shape)
-        highlightContentView = UIView()
-        highlightContentView.backgroundColor = .clear
-        addSubview(highlightContentView)
-
-        // Blob-shaped mask for highlight layer
-        highlightMaskLayer = CAShapeLayer()
-        highlightMaskLayer.fillColor = UIColor.white.cgColor
-        highlightContentView.layer.mask = highlightMaskLayer
+        contentView = UIView()
+        contentView.backgroundColor = .clear
+        contentView.isUserInteractionEnabled = false
+        addSubview(contentView)
     }
 
     private func setupDisplayLink() {
         displayLink = CADisplayLink(target: self, selector: #selector(animationTick))
         displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120)
         displayLink?.add(to: .main, forMode: .common)
+    }
+
+    private func setupGestures() {
+        // Pan for dragging
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.delegate = self
+        addGestureRecognizer(pan)
+
+        // Tap for instant selection (no require(toFail:) - both gestures recognize freely)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        addGestureRecognizer(tap)
+    }
+
+    // MARK: - UIGestureRecognizerDelegate
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        return true
     }
 
     // MARK: - Layout
@@ -245,17 +269,15 @@ final class LiquidGlassTabBar: UIView {
         tintLayer?.frame = bounds
         tintLayer?.cornerRadius = pillRadius
 
-        // Metal container is larger to allow blob overflow
-        let containerFrame = bounds.insetBy(dx: -overflowPadding, dy: -overflowPadding)
-        metalContainerView?.frame = containerFrame
+        // Metal container matches bounds
+        metalContainerView?.frame = bounds
         metalView?.frame = metalContainerView?.bounds ?? bounds
 
         edgeLayer?.frame = bounds
         edgeLayer?.cornerRadius = pillRadius
 
-        normalContentView?.frame = bounds
-        highlightContentView?.frame = bounds
-        highlightContentView?.clipsToBounds = false  // Allow blob to overflow
+        contentView?.frame = bounds
+        maskedContentView?.frame = bounds
 
         // Update edge mask path with pill radius
         if let mask = edgeLayer?.mask as? CAShapeLayer {
@@ -267,6 +289,7 @@ final class LiquidGlassTabBar: UIView {
         }
 
         layoutTabButtons()
+        layoutBlobView()
         updateUniformsGeometry()
 
         // Capture initial texture if we don't have one yet
@@ -280,99 +303,120 @@ final class LiquidGlassTabBar: UIView {
     }
 
     private func layoutTabButtons() {
-        guard !normalTabButtons.isEmpty else { return }
+        guard !tabButtons.isEmpty else { return }
 
-        let buttonWidth = bounds.width / CGFloat(normalTabButtons.count)
-        let buttonHeight = bounds.height
+        let tabWidth = bounds.width / CGFloat(tabButtons.count)
+        let tabHeight = bounds.height
 
-        // Layout both normal and highlight buttons identically
-        for (index, button) in normalTabButtons.enumerated() {
+        for (index, button) in tabButtons.enumerated() {
             let frame = CGRect(
-                x: CGFloat(index) * buttonWidth,
+                x: CGFloat(index) * tabWidth,
                 y: 0,
-                width: buttonWidth,
-                height: buttonHeight
+                width: tabWidth,
+                height: tabHeight
             )
             button.frame = frame
-            highlightTabButtons[index].frame = frame
+
+            // Layout corresponding masked button at same position
+            if index < maskedTabButtons.count {
+                maskedTabButtons[index].frame = frame
+            }
         }
 
-        // Get correct center now that buttons are laid out
-        let center = centerForTab(at: selectedIndex)
-
-        // Always ensure target is correct
-        blob1Animator.target = center
-
-        // Position blob at selected tab if not animating
-        if blob1Animator.isSettled {
-            blob1Animator.setPosition(center, animated: false)
+        // Initialize blob position if needed (but not during drag)
+        if !isDragging && blobAnimator.isSettled && !items.isEmpty {
+            let center = centerForTab(at: selectedIndex)
+            blobAnimator.setPosition(center, animated: false)
         }
+    }
 
-        // Ensure blob radius is initialized on first layout
-        if blob1RadiusAnimator.current == 0 && !items.isEmpty {
-            blob1RadiusAnimator.setValue(configuration.blobRadius, animated: false)
-        }
+    private func layoutBlobView() {
+        updateBlobFrame()
+    }
+
+    private func updateBlobFrame() {
+        guard !tabButtons.isEmpty else { return }
+
+        let tabWidth = tabButtons[0].frame.width
+        let blobScale = blobScaleAnimator.current
+        let baseHeight = bounds.height - blobVerticalPadding
+
+        // Blob size
+        let width = tabWidth * 0.85
+        let height = baseHeight * blobScale
+
+        // Blob position (X from animator, Y locked to center)
+        let center = CGPoint(x: blobAnimator.current.x, y: bounds.midY)
+        let frame = CGRect(
+            x: center.x - width / 2,
+            y: center.y - height / 2,
+            width: width,
+            height: height
+        )
+
+        // Update both blob views
+        blobBackgroundView.frame = frame
+        blobBackgroundView.layer.cornerRadius = height / 2
+
+        blobView.frame = frame
+        blobView.layer.cornerRadius = height / 2
     }
 
     // MARK: - Tab Buttons
 
     private func rebuildTabButtons() {
         // Remove existing
-        normalTabButtons.forEach { $0.removeFromSuperview() }
-        highlightTabButtons.forEach { $0.removeFromSuperview() }
-        normalTabButtons.removeAll()
-        highlightTabButtons.removeAll()
+        tabButtons.forEach { $0.removeFromSuperview() }
+        tabButtons.removeAll()
+        maskedTabButtons.forEach { $0.removeFromSuperview() }
+        maskedTabButtons.removeAll()
 
-        // Create buttons in BOTH content views
+        // Create unselected buttons (bottom layer)
         for (index, item) in items.enumerated() {
-            // Normal button (muted colors, handles taps)
-            let normalButton = createTabButton(item: item, index: index, isHighlighted: false)
-            normalButton.addTarget(self, action: #selector(tabButtonTapped(_:)), for: .touchUpInside)
-            normalContentView.addSubview(normalButton)
-            normalTabButtons.append(normalButton)
+            let button = createTabButton(item: item, index: index, forMaskedLayer: false)
+            contentView.addSubview(button)
+            tabButtons.append(button)
+        }
 
-            // Highlighted button (bright colors, no interaction - just visual)
-            let highlightButton = createTabButton(item: item, index: index, isHighlighted: true)
-            highlightButton.isUserInteractionEnabled = false
-            highlightContentView.addSubview(highlightButton)
-            highlightTabButtons.append(highlightButton)
+        // Create selected buttons (masked layer - visible through blob)
+        for (index, item) in items.enumerated() {
+            let button = createTabButton(item: item, index: index, forMaskedLayer: true)
+            maskedContentView.addSubview(button)
+            maskedTabButtons.append(button)
         }
 
         // Initialize blob position
         if !items.isEmpty {
             let center = centerForTab(at: selectedIndex)
-            blob1Animator.setPosition(center, animated: false)
-            blob1RadiusAnimator.setValue(configuration.blobRadius, animated: false)
+            blobAnimator.setPosition(center, animated: false)
+            blobScaleAnimator.setScale(1.0, animated: false)
         }
 
         setNeedsLayout()
     }
 
-    private func createTabButton(item: LiquidGlassTabItem, index: Int, isHighlighted: Bool) -> UIButton {
-        let button = UIButton(type: .system)
-        button.tag = index
-
-        // Highlighted buttons are always bright, normal buttons are always muted
-        let foregroundColor: UIColor = isHighlighted ? .label : .secondaryLabel
-
-        button.tintColor = foregroundColor
-
+    private func createTabButton(item: LiquidGlassTabItem, index: Int, forMaskedLayer: Bool = false) -> UIButton {
         var config = UIButton.Configuration.plain()
         config.image = item.icon.withRenderingMode(.alwaysTemplate)
         config.title = item.title
         config.imagePlacement = .top
         config.imagePadding = 4
-        config.baseForegroundColor = foregroundColor
-        button.configuration = config
+        config.baseForegroundColor = forMaskedLayer ? selectedColor : unselectedColor
+
+        let button = UIButton(configuration: config)
+        button.tag = index
+        button.isUserInteractionEnabled = false  // Gestures handle interaction
+        button.configurationUpdateHandler = nil
 
         return button
     }
 
-    @objc private func tabButtonTapped(_ sender: UIButton) {
-        // Ignore button taps during drag - selection happens via pan gesture end
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        // Ignore taps during drag
         guard !isDragging else { return }
 
-        let index = sender.tag
+        let location = gesture.location(in: self)
+        let index = indexOfNearestTab(to: location)
         let now = CACurrentMediaTime()
 
         // Double-tap detection
@@ -387,145 +431,32 @@ final class LiquidGlassTabBar: UIView {
 
         lastTapTime = now
         lastTappedIndex = index
-
-        if index != selectedIndex {
-            selectTab(at: index, animated: true)
-        }
+        selectTab(at: index, animated: true)
     }
 
-    // MARK: - Selection
-
-    func selectTab(at index: Int, animated: Bool) {
-        guard index >= 0 && index < items.count else { return }
-
-        let oldIndex = selectedIndex
-        selectedIndex = index
-
-        // Note: Button appearance is handled by the blob mask layer
-        // Normal buttons are always muted, highlighted buttons are always bright
-        // The mask reveals the highlighted version based on blob position
-
-        // Animate blob
-        if animated && configuration.enableBlobMerging {
-            animateBlobTransition(from: oldIndex, to: index)
-        } else {
-            let center = centerForTab(at: index)
-            blob1Animator.setPosition(center, animated: animated)
-        }
-
-        delegate?.tabBar(self, didSelectItemAt: index)
-    }
-
-    private func animateBlobTransition(from oldIndex: Int, to newIndex: Int) {
-        let newCenter = centerForTab(at: newIndex)
-
-        // Animate blob1 position toward new target (spring animation)
-        // Blob1 radius stays constant - no shrinking needed
-        blob1Animator.target = newCenter
-
-        // Spawn blob2 at destination for the merge effect
-        blob2Animator.setPosition(newCenter, animated: false)
-        blob2RadiusAnimator.setValue(0, animated: false)
-        blob2RadiusAnimator.target = configuration.blobRadius
-
-        // Mark as transitioning - blob2 will fade out when blob1 arrives
-        isTransitioning = true
-    }
-
-    // MARK: - Animation
-
-    @objc private func animationTick() {
-        blob1Animator.step()
-        blob2Animator.step()
-        blob1RadiusAnimator.step()
-        blob2RadiusAnimator.step()
-        blobScaleAnimator.step()
-
-        // Handle transition completion: fade out blob2 when blob1 arrives
-        if isTransitioning {
-            if blob1Animator.isSettled {
-                // Blob1 has arrived, start fading out blob2
-                blob2RadiusAnimator.target = 0
-            }
-            if blob1Animator.isSettled && blob2RadiusAnimator.isSettled {
-                // Both settled, transition complete
-                isTransitioning = false
-            }
-        }
-
-        // Update blob mask for highlight layer (every frame)
-        updateBlobMask()
-
-        // Capture backdrop every frame
-        captureBackdropSnapshot()
-    }
-
-    /// Updates the mask layer to match current blob position using pill shape matching container
-    private func updateBlobMask() {
-        let blobPath = UIBezierPath()
-        let blobScale = blobScaleAnimator.current
-
-        // Get button width for blob width
-        let buttonWidth: CGFloat = normalTabButtons.isEmpty ? bounds.width / 4 : normalTabButtons[0].frame.width
-        // Base blob height fits within bounds with padding (scale 1.0 = within bounds)
-        let baseHeight = bounds.height - blobVerticalPadding
-
-        // Helper to create pill-shaped path matching container style
-        func addPillPath(center: CGPoint, scale: CGFloat) {
-            // Width stays same, height scales (grows outside container when scale > 1.0)
-            let width = buttonWidth * 0.9  // Slightly smaller than button
-            let height = baseHeight * scale
-            let rect = CGRect(
-                x: center.x - width / 2,
-                y: center.y - height / 2,
-                width: width,
-                height: height
-            )
-            // Pill shape: cornerRadius = height/2
-            let pill = UIBezierPath(roundedRect: rect, cornerRadius: height / 2)
-            blobPath.append(pill)
-        }
-
-        // Add blob1 pill with scale applied (grows outside when pressed/dragged)
-        if blob1RadiusAnimator.current > 0 {
-            addPillPath(center: blob1Animator.current, scale: blobScale)
-        }
-
-        // Add blob2 pill (during transitions, no scale applied)
-        if blob2RadiusAnimator.current > 0 {
-            addPillPath(center: blob2Animator.current, scale: 1.0)
-        }
-
-        // Update mask without implicit animation
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        highlightMaskLayer.path = blobPath.cgPath
-        CATransaction.commit()
-    }
-
-    // MARK: - Pan Gesture (Draggable Blob)
+    // MARK: - Pan Gesture (Drag to Switch Tabs)
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         let location = gesture.location(in: self)
+        // Lock Y to vertical center
+        let lockedPosition = CGPoint(x: location.x, y: bounds.midY)
 
         switch gesture.state {
         case .began:
             isDragging = true
-            // Move blob to finger position immediately
-            blob1Animator.setPosition(location, animated: false)
-            // Scale up when dragging starts
-            blobScaleAnimator.setScale(configuration.blobDragScale, animated: true)
+            // Move blob to finger (X only), scale up
+            blobAnimator.setPosition(lockedPosition, animated: false)
+            blobScaleAnimator.setScale(configuration.sdfDragScale, animated: true)
+            updateBlobFrame()
 
         case .changed:
-            // Move blob to follow finger
-            blob1Animator.setPosition(location, animated: false)
+            // Follow finger (X only)
+            blobAnimator.setPosition(lockedPosition, animated: false)
+            updateBlobFrame()
 
         case .ended, .cancelled:
             isDragging = false
-            // Scale back down to normal (fits within bounds)
-            blobScaleAnimator.setScale(1.0, animated: true)
-
-            // Snap to nearest tab
+            // Snap to nearest tab (stays expanded during animation, shrinks when settled)
             let nearestIndex = indexOfNearestTab(to: location)
             selectTab(at: nearestIndex, animated: true)
 
@@ -535,12 +466,12 @@ final class LiquidGlassTabBar: UIView {
     }
 
     private func indexOfNearestTab(to point: CGPoint) -> Int {
-        guard !normalTabButtons.isEmpty else { return 0 }
+        guard !tabButtons.isEmpty else { return 0 }
 
         var nearestIndex = 0
         var nearestDistance = CGFloat.greatestFiniteMagnitude
 
-        for (index, button) in normalTabButtons.enumerated() {
+        for (index, button) in tabButtons.enumerated() {
             let distance = abs(button.center.x - point.x)
             if distance < nearestDistance {
                 nearestDistance = distance
@@ -551,68 +482,67 @@ final class LiquidGlassTabBar: UIView {
         return nearestIndex
     }
 
-    private var debugLogCounter = 0
+    // MARK: - Selection
+
+    func selectTab(at index: Int, animated: Bool) {
+        guard index >= 0 && index < items.count else { return }
+
+        selectedIndex = index
+
+        // Scale up during animation
+        if animated {
+            blobScaleAnimator.setScale(configuration.sdfDragScale, animated: true)
+        }
+
+        // Animate blob to selected tab
+        let center = centerForTab(at: index)
+        blobAnimator.target = center
+        if !animated {
+            blobAnimator.setPosition(center, animated: false)
+        }
+
+        delegate?.tabBar(self, didSelectItemAt: index)
+    }
+
+    // MARK: - Animation
+
+    @objc private func animationTick() {
+        let needsUpdate = !blobAnimator.isSettled || !blobScaleAnimator.isSettled || isDragging
+
+        // Only step and update when animation is active
+        if needsUpdate {
+            blobAnimator.step()
+            blobScaleAnimator.step()
+            updateBlobFrame()
+        }
+
+        // Shrink when blob stops moving (not dragging)
+        if !isDragging && blobAnimator.isSettled && blobScaleAnimator.current > 1.01 {
+            blobScaleAnimator.setScale(1.0, animated: true)
+        }
+
+        // Capture backdrop for glass effect (separate from blob animation)
+        captureBackdropSnapshot()
+    }
+
+    // MARK: - Helpers
+
+    private func centerForTab(at index: Int) -> CGPoint {
+        guard index >= 0 && index < tabButtons.count else {
+            return CGPoint(x: bounds.midX, y: bounds.midY)
+        }
+        return tabButtons[index].center
+    }
+
+    // MARK: - Metal Uniforms
 
     private func updateUniforms() {
         guard let renderer = renderer else { return }
 
-        // Get scale factor for Metal coordinates (drawable uses pixels, not points)
-        let scale = metalView?.contentScaleFactor ?? 1.0
-        let blobScale = blobScaleAnimator.current
-
-        // Offset for container (blob positions need to be offset by padding)
-        let paddingOffset = overflowPadding * scale
-
-        // Calculate blob size: width based on button, height with padding (fits within at scale 1.0)
-        let buttonWidth: CGFloat = normalTabButtons.isEmpty ? bounds.width / 4 : normalTabButtons[0].frame.width
-        let blobWidth = buttonWidth * 0.9  // Slightly smaller than button
-        let baseHeight = bounds.height - blobVerticalPadding  // Fits within bounds at scale 1.0
-        let blobHeight = baseHeight * blobScale  // Overflows when scale > 1.0
-
-        // Update blob1 - convert points to pixels, offset by container padding
-        let blob1Pos = CGPoint(
-            x: blob1Animator.current.x * scale + paddingOffset,
-            y: blob1Animator.current.y * scale + paddingOffset
-        )
-        let blob1Size = CGSize(width: blobWidth * scale, height: blobHeight * scale)
-        renderer.blob1Uniforms = BlobUniforms(
-            position: blob1Pos,
-            size: blob1Size,
-            intensity: configuration.blobIntensity
-        )
-
-        // Update blob2 - convert points to pixels, offset by container padding
-        let blob2Pos = CGPoint(
-            x: blob2Animator.current.x * scale + paddingOffset,
-            y: blob2Animator.current.y * scale + paddingOffset
-        )
-        let blob2Size = CGSize(width: blobWidth * scale, height: baseHeight * scale)  // Uses same padded height
-        renderer.blob2Uniforms = BlobUniforms(
-            position: blob2Pos,
-            size: blob2Size,
-            intensity: configuration.blobIntensity
-        )
-
-        // Update tab uniforms for unselected fills (also offset by padding)
-        renderer.tabUniforms.count = Int32(min(normalTabButtons.count, 8))
-        renderer.tabUniforms.selectedIndex = Int32(selectedIndex)
-        renderer.tabUniforms.fillRadius = Float(blobWidth * scale * 0.4)  // Smaller fill for unselected
-        renderer.tabUniforms.fillOpacity = Float(configuration.unselectedFillOpacity)
-
-        for (index, button) in normalTabButtons.enumerated() where index < 8 {
-            let pos = CGPoint(
-                x: button.center.x * scale + paddingOffset,
-                y: button.center.y * scale + paddingOffset
-            )
-            renderer.tabUniforms.setPosition(index, pos)
-        }
-
-        // Debug logging (every 60 frames to avoid spam)
-        debugLogCounter += 1
-        if debugLogCounter % 60 == 0 {
-            print("[LiquidGlass] Scale: \(scale), BlobScale: \(blobScale), Blob1: pos=\(blob1Pos), size=\(blob1Size)")
-            print("[LiquidGlass] ContainerSize (pixels): \((bounds.width + overflowPadding * 2) * scale) x \((bounds.height + overflowPadding * 2) * scale)")
-        }
+        // Zero out SDF uniforms (blob is UIKit, not shader)
+        renderer.sdf1Uniforms = SdfUniforms()
+        renderer.sdf2Uniforms = SdfUniforms()
+        renderer.tabUniforms = TabUniforms()
     }
 
     private func updateUniformsGeometry() {
@@ -624,23 +554,16 @@ final class LiquidGlassTabBar: UIView {
         // Use pill radius (height/2) for shader corner radius
         let pillRadius = bounds.height / 2
 
-        // Container is larger than tab bar by overflowPadding on each side
-        let containerWidth = bounds.width + overflowPadding * 2
-        let containerHeight = bounds.height + overflowPadding * 2
-
-        // View size is the full container size (allows blob to render outside)
+        // View size matches bounds
         renderer.glassUniforms.viewSize = SIMD2<Float>(
-            Float(containerWidth * scale),
-            Float(containerHeight * scale)
+            Float(bounds.width * scale),
+            Float(bounds.height * scale)
         )
 
-        // Glass origin is offset by padding (glass rect is inside the container)
-        renderer.glassUniforms.glassOrigin = SIMD2<Float>(
-            Float(overflowPadding * scale),
-            Float(overflowPadding * scale)
-        )
+        // Glass origin at (0, 0)
+        renderer.glassUniforms.glassOrigin = SIMD2<Float>(0, 0)
 
-        // Glass size is the original tab bar size
+        // Glass size is the tab bar size
         renderer.glassUniforms.glassSize = SIMD2<Float>(
             Float(bounds.width * scale),
             Float(bounds.height * scale)
@@ -651,19 +574,9 @@ final class LiquidGlassTabBar: UIView {
         renderer.glassUniforms.specularIntensity = Float(configuration.specularIntensity)
     }
 
-    // MARK: - Helpers
-
-    private func centerForTab(at index: Int) -> CGPoint {
-        guard index >= 0 && index < normalTabButtons.count else {
-            return CGPoint(x: bounds.midX, y: bounds.midY)
-        }
-        let button = normalTabButtons[index]
-        return button.center
-    }
+    // MARK: - Configuration
 
     private func applyConfiguration() {
-        // Corner radius is set in layoutSubviews() as pill shape (height/2)
-
         // Update backdrop blur settings
         if let backdrop = backdropLayer {
             BackdropLayerWrapper.updateBlurIntensity(configuration.blurIntensity, on: backdrop)
@@ -677,8 +590,7 @@ final class LiquidGlassTabBar: UIView {
         metalView?.preferredFramesPerSecond = configuration.preferredFPS
 
         // Update animators
-        blob1Animator.configure(with: configuration)
-        blob2Animator.configure(with: configuration)
+        blobAnimator.configure(with: configuration)
 
         // Update renderer
         updateUniformsGeometry()
@@ -686,15 +598,12 @@ final class LiquidGlassTabBar: UIView {
         setNeedsLayout()
     }
 
-    // MARK: - Backdrop Snapshot for Refraction (IOSurface-backed, GPU-accelerated)
+    // MARK: - Backdrop Snapshot for Refraction
 
-    /// Public method called by scroll view delegate (no-op now since we capture every frame)
     func updateBackdropSnapshot() {
-        // Capture is done every frame in animationTick, so this is a no-op
-        // Keep the method for API compatibility
+        captureBackdropSnapshot()
     }
 
-    /// Capture backdrop using IOSurface-backed CGContext (zero-copy to GPU)
     private func captureBackdropSnapshot() {
         guard let superview = superview,
               let pool = texturePool,
@@ -702,26 +611,14 @@ final class LiquidGlassTabBar: UIView {
 
         let scale = metalView?.contentScaleFactor ?? 2.0
 
-        // Container size includes overflow padding
-        let containerSize = CGSize(
-            width: bounds.width + overflowPadding * 2,
-            height: bounds.height + overflowPadding * 2
-        )
-
-        // Get IOSurface-backed context (reuses existing if size matches)
-        guard let context = pool.getContext(size: containerSize, scale: scale) else { return }
+        // Get IOSurface-backed context
+        guard let context = pool.getContext(size: bounds.size, scale: scale) else { return }
 
         // Lock IOSurface for CPU access
         pool.lockForCPU()
 
-        // Get the rect of container in superview's coordinate space (includes overflow)
-        let containerRect = CGRect(
-            x: -overflowPadding,
-            y: -overflowPadding,
-            width: containerSize.width,
-            height: containerSize.height
-        )
-        let rectInSuperview = convert(containerRect, to: superview)
+        // Get the rect in superview's coordinate space
+        let rectInSuperview = convert(bounds, to: superview)
 
         // Hide self temporarily so we capture what's behind
         layer.isHidden = true

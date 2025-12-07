@@ -149,10 +149,4 @@ class ViewController: UIViewController, LiquidGlassTabBarDelegate, UIScrollViewD
         scrollView.setContentOffset(.zero, animated: true)
     }
 
-    // MARK: - UIScrollViewDelegate
-
-    func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        // Update tab bar backdrop snapshot as content scrolls
-        tabBar.updateBackdropSnapshot()
-    }
 }
