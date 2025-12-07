@@ -106,6 +106,11 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         setupDisplayLink()
         setupGestures()
 
+        // Bring Metal to front so refracted content shows on top of UIKit icons
+        if let metal = metalContainerView {
+            bringSubviewToFront(metal)
+        }
+
         // Configure animators
         blobAnimator.configure(with: configuration)
 
@@ -269,9 +274,7 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         tintLayer?.frame = bounds
         tintLayer?.cornerRadius = pillRadius
 
-        // Metal container matches bounds
-        metalContainerView?.frame = bounds
-        metalView?.frame = metalContainerView?.bounds ?? bounds
+        // Metal container follows blob (updated in updateBlobFrame)
 
         edgeLayer?.frame = bounds
         edgeLayer?.cornerRadius = pillRadius
@@ -340,9 +343,10 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         let tabWidth = tabButtons[0].frame.width
         let blobScale = blobScaleAnimator.current
         let baseHeight = bounds.height - blobVerticalPadding
+        let baseWidth = tabWidth * 0.85
 
-        // Blob size
-        let width = tabWidth * 0.85
+        // Blob size - scale both width and height to keep pill shape
+        let width = baseWidth * blobScale
         let height = baseHeight * blobScale
 
         // Blob position (X from animator, Y locked to center)
@@ -354,12 +358,28 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
             height: height
         )
 
+        // Toggle between glass effect (expanded) and flat gray (collapsed)
+        let isExpanded = blobScale > 1.01
+        blobBackgroundView.isHidden = isExpanded
+        metalContainerView?.isHidden = !isExpanded
+        metalView?.isPaused = !isExpanded
+
         // Update both blob views
         blobBackgroundView.frame = frame
         blobBackgroundView.layer.cornerRadius = height / 2
 
         blobView.frame = frame
         blobView.layer.cornerRadius = height / 2
+
+        // Update Metal view to cover capture area (tab bar + padding for blob overflow)
+        if isExpanded {
+            let captureArea = captureRect
+            metalContainerView?.frame = captureArea
+            metalView?.frame = metalContainerView?.bounds ?? captureArea
+
+            // Update uniforms with blob position within capture area
+            updateUniformsGeometry(blobFrame: frame)
+        }
     }
 
     // MARK: - Tab Buttons
@@ -521,8 +541,11 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
             blobScaleAnimator.setScale(1.0, animated: true)
         }
 
-        // Capture backdrop for glass effect (separate from blob animation)
-        captureBackdropSnapshot()
+        // Only capture backdrop when expanded (glass effect active)
+        let isExpanded = blobScaleAnimator.current > 1.01
+        if isExpanded {
+            captureBackdropSnapshot()
+        }
     }
 
     // MARK: - Helpers
@@ -545,28 +568,41 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         renderer.tabUniforms = TabUniforms()
     }
 
-    private func updateUniformsGeometry() {
+    private func updateUniformsGeometry(blobFrame: CGRect? = nil) {
         guard let renderer = renderer else { return }
+
+        let captureArea = captureRect
+        guard captureArea.width > 0 && captureArea.height > 0 else { return }
+
+        let blob = blobFrame ?? blobBackgroundView?.frame ?? .zero
+        guard blob.width > 0 && blob.height > 0 else { return }
 
         // Get scale factor - drawable uses pixels, not points
         let scale = metalView?.contentScaleFactor ?? 1.0
 
-        // Use pill radius (height/2) for shader corner radius
-        let pillRadius = bounds.height / 2
+        // Use blob's pill radius (height/2) for shader corner radius
+        let pillRadius = blob.height / 2
 
-        // View size matches bounds
+        // View size matches capture area (texture size)
         renderer.glassUniforms.viewSize = SIMD2<Float>(
-            Float(bounds.width * scale),
-            Float(bounds.height * scale)
+            Float(captureArea.width * scale),
+            Float(captureArea.height * scale)
         )
 
-        // Glass origin at (0, 0)
-        renderer.glassUniforms.glassOrigin = SIMD2<Float>(0, 0)
+        // Glass origin = blob position within capture area
+        let blobOriginInCapture = CGPoint(
+            x: blob.origin.x - captureArea.origin.x,
+            y: blob.origin.y - captureArea.origin.y
+        )
+        renderer.glassUniforms.glassOrigin = SIMD2<Float>(
+            Float(blobOriginInCapture.x * scale),
+            Float(blobOriginInCapture.y * scale)
+        )
 
-        // Glass size is the tab bar size
+        // Glass size is the blob size
         renderer.glassUniforms.glassSize = SIMD2<Float>(
-            Float(bounds.width * scale),
-            Float(bounds.height * scale)
+            Float(blob.width * scale),
+            Float(blob.height * scale)
         )
 
         renderer.glassUniforms.cornerRadius = Float(pillRadius * scale)
@@ -604,33 +640,48 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         captureBackdropSnapshot()
     }
 
+    /// Cached capture rect for backdrop (tab bar + padding for scaled blob overflow)
+    private var captureRect: CGRect {
+        // Calculate padding for scaled blob overflow
+        let baseHeight = bounds.height - blobVerticalPadding
+        let maxScaledHeight = baseHeight * configuration.sdfDragScale
+        let verticalPadding = (maxScaledHeight - baseHeight) / 2
+        return bounds.insetBy(dx: 0, dy: -verticalPadding)
+    }
+
     private func captureBackdropSnapshot() {
         guard let superview = superview,
               let pool = texturePool,
               bounds.width > 0 && bounds.height > 0 else { return }
 
         let scale = metalView?.contentScaleFactor ?? 2.0
+        let captureArea = captureRect
 
-        // Get IOSurface-backed context
-        guard let context = pool.getContext(size: bounds.size, scale: scale) else { return }
+        // Get IOSurface-backed context sized for tab bar + padding
+        guard let context = pool.getContext(size: captureArea.size, scale: scale) else { return }
 
         // Lock IOSurface for CPU access
         pool.lockForCPU()
 
-        // Get the rect in superview's coordinate space
-        let rectInSuperview = convert(bounds, to: superview)
+        // Get capture rect in superview's coordinate space
+        let captureRectInSuperview = convert(captureArea, to: superview)
 
-        // Hide self temporarily so we capture what's behind
-        layer.isHidden = true
+        // Hide Metal and blob views (keep tab content visible for refraction)
+        metalContainerView?.isHidden = true
+        blobBackgroundView?.isHidden = true
+        maskedContentView?.isHidden = true
 
-        // Save state, apply transforms, render
+        // Save state, apply transforms, render at capture area position
         context.saveGState()
-        context.translateBy(x: -rectInSuperview.origin.x * scale, y: -rectInSuperview.origin.y * scale)
+        context.translateBy(x: -captureRectInSuperview.origin.x * scale, y: -captureRectInSuperview.origin.y * scale)
         context.scaleBy(x: scale, y: scale)
         superview.layer.render(in: context)
         context.restoreGState()
 
-        layer.isHidden = false
+        // Restore visibility
+        metalContainerView?.isHidden = false
+        blobBackgroundView?.isHidden = false
+        maskedContentView?.isHidden = false
 
         // Unlock IOSurface
         pool.unlockForCPU()
