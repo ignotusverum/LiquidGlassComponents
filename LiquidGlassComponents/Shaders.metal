@@ -32,6 +32,15 @@ struct TabUniforms {
     float  fillOpacity;
 };
 
+// MARK: - Glass Effect Constants (percentages of blob size)
+
+namespace GlassEffects {
+    constant float smearPercent = 0.04;           // 4% of blob height
+    constant float chromaticPercent = 0.02;       // 2% of blob height
+    constant float refractionMultiplier = 12.0;   // Refraction strength multiplier
+    constant float paddingPercent = 0.08;         // 8% edge padding
+}
+
 // MARK: - SDF Functions
 
 /**
@@ -184,13 +193,13 @@ float3 sampleWithChromaticAberration(
     float2 greenUV = baseUV;
     float2 blueUV = baseUV - chromaticOffset;
 
-    // Gaussian weights: approximate e^(-x²/2σ²), sum = 1.0
-    const int kSamples = 5;
-    float weights[5] = { 0.1, 0.2, 0.4, 0.2, 0.1 };
+    // Gaussian weights: e^(-x²/2σ²) with σ=2.0, sum = 1.0
+    const int kSamples = 9;
+    float weights[9] = { 0.028, 0.066, 0.121, 0.176, 0.199, 0.176, 0.121, 0.066, 0.028 };
     float3 color = float3(0.0);
 
     for (int i = 0; i < kSamples; i++) {
-        float offset = (float(i) - 2.0) * smearAmount;
+        float offset = (float(i) - 4.0) * smearAmount * 0.5;  // tighter spacing
         float2 smearOffset = tangentDir * offset / viewSize;
 
         float2 rUV = clamp(redUV + smearOffset, 0.001, 0.999);
@@ -339,10 +348,11 @@ fragment float4 liquidGlassTabBarFragment(
     constant SdfUniforms &sdf2 [[buffer(2)]],
     constant TabUniforms &tabs [[buffer(3)]]
 ) {
-    const float kSmearStrength = 8.0;
-    const float kChromaticStrength = 4.0;
-    const float kRefractionMultiplier = 18.0;
-    const float kPaddingAmount = 0.08;
+    // Calculate effect strengths from percentages (relative to blob height)
+    const float kSmearStrength = GlassEffects::smearPercent * glass.glassSize.y;
+    const float kChromaticStrength = GlassEffects::chromaticPercent * glass.glassSize.y;
+    const float kRefractionMultiplier = GlassEffects::refractionMultiplier;
+    const float kPaddingAmount = GlassEffects::paddingPercent;
 
     float2 pixelPos = in.texCoord * glass.viewSize;
     float2 uv = in.texCoord;

@@ -93,7 +93,7 @@ class ViewController: UIViewController, LiquidGlassTabBarDelegate, UIScrollViewD
     }
 
     private func setupTabBar() {
-        let tabBarHeight: CGFloat = 80
+        let tabBarHeight: CGFloat = 70
 
         tabBar = LiquidGlassTabBar()
         tabBar.delegate = self

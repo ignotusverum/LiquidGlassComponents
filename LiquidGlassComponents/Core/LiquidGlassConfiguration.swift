@@ -147,7 +147,7 @@ struct LiquidGlassConfiguration {
     var sdfPressedScale: CGFloat = 1.15
 
     /// Scale factor when SDF is being dragged
-    var sdfDragScale: CGFloat = 1.25
+    var sdfDragScale: CGFloat = 1.4
 
     // MARK: - Shape
 

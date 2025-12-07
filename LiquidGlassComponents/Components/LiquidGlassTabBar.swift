@@ -42,7 +42,7 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
     private var blobView: UIView!                 // Mask shape for maskedContentView
     private let blobAnimator = SpringAnimator()
     private let blobScaleAnimator = ScaleAnimator()
-    private let blobVerticalPadding: CGFloat = 8
+    private let blobVerticalPadding: CGFloat = 4
     private var maskedTabButtons: [UIButton] = []
 
     // MARK: - IOSurface Texture Pool (GPU-accelerated capture)
@@ -343,7 +343,7 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         let tabWidth = tabButtons[0].frame.width
         let blobScale = blobScaleAnimator.current
         let baseHeight = bounds.height - blobVerticalPadding
-        let baseWidth = tabWidth * 0.85
+        let baseWidth = tabWidth * 0.95
 
         // Blob size - scale both width and height to keep pill shape
         let width = baseWidth * blobScale
@@ -458,20 +458,20 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         let location = gesture.location(in: self)
-        // Lock Y to vertical center
-        let lockedPosition = CGPoint(x: location.x, y: bounds.midY)
+        // Lock Y to vertical center, clamp X to valid tab range
+        let clampedPosition = CGPoint(x: clampedX(location.x), y: bounds.midY)
 
         switch gesture.state {
         case .began:
             isDragging = true
-            // Move blob to finger (X only), scale up
-            blobAnimator.setPosition(lockedPosition, animated: false)
+            // Move blob to finger (X clamped), scale up
+            blobAnimator.setPosition(clampedPosition, animated: false)
             blobScaleAnimator.setScale(configuration.sdfDragScale, animated: true)
             updateBlobFrame()
 
         case .changed:
-            // Follow finger (X only)
-            blobAnimator.setPosition(lockedPosition, animated: false)
+            // Follow finger (X clamped)
+            blobAnimator.setPosition(clampedPosition, animated: false)
             updateBlobFrame()
 
         case .ended, .cancelled:
@@ -646,7 +646,16 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         let baseHeight = bounds.height - blobVerticalPadding
         let maxScaledHeight = baseHeight * configuration.sdfDragScale
         let verticalPadding = (maxScaledHeight - baseHeight) / 2
-        return bounds.insetBy(dx: 0, dy: -verticalPadding)
+        let horizontalPadding = verticalPadding  // Same padding on sides for edge refraction
+        return bounds.insetBy(dx: -horizontalPadding, dy: -verticalPadding)
+    }
+
+    /// Clamp X position to valid tab range (first to last tab center)
+    private func clampedX(_ x: CGFloat) -> CGFloat {
+        guard !tabButtons.isEmpty else { return x }
+        let minX = tabButtons.first!.center.x
+        let maxX = tabButtons.last!.center.x
+        return min(max(x, minX), maxX)
     }
 
     private func captureBackdropSnapshot() {
