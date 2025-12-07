@@ -19,8 +19,17 @@ struct GlassUniforms {
 
 struct BlobUniforms {
     float2 position;
-    float  radius;
+    float2 size;      // half-width, half-height (for pill shape)
     float  intensity;
+    float  _padding;  // alignment
+};
+
+struct TabUniforms {
+    float2 positions[8];  // Up to 8 tab center positions
+    int    count;
+    int    selectedIndex;
+    float  fillRadius;
+    float  fillOpacity;
 };
 
 // MARK: - SDF Functions
@@ -55,14 +64,36 @@ float smin(float a, float b, float k) {
 }
 
 /**
- Calculates signed distance to a blob (circle).
+ Calculates signed distance to a superellipse (squircle).
+ @param pos Position relative to squircle center
+ @param size Half-width and half-height of squircle
+ @param n Superellipse exponent (4-5 for iOS-style squircle)
+ @return Signed distance (negative inside, positive outside)
+ @note Formula: |x/a|^n + |y/b|^n = 1
+       n=2 is ellipse, n=4-5 is squircle, n->infinity is rectangle
+ */
+float sdSquircle(float2 pos, float2 size, float n) {
+    float2 d = abs(pos) / size;
+    float dist = pow(pow(d.x, n) + pow(d.y, n), 1.0 / n);
+    // Convert to signed distance (approximate)
+    float interior = dist - 1.0;
+    // Scale by minimum axis for proper distance metric
+    return interior * min(size.x, size.y);
+}
+
+/**
+ Calculates signed distance to a blob (pill/rounded rect).
  @param pixelPos Current pixel position
- @param blob Blob uniforms containing position, radius, intensity
+ @param blob Blob uniforms containing position, size, intensity
  @return Signed distance to blob edge
+ @note Uses rounded rect with cornerRadius = height/2 for pill shape
  */
 float calculateBlobSdf(float2 pixelPos, constant BlobUniforms &blob) {
-    if (blob.radius <= 0.0) return 10000.0;
-    return length(pixelPos - blob.position) - blob.radius;
+    if (blob.size.y <= 0.0) return 10000.0;
+    float2 pos = pixelPos - blob.position;
+    // Pill shape: corner radius = half-height
+    float cornerRadius = blob.size.y;
+    return sdRoundedRect(pos, blob.size, cornerRadius);
 }
 
 // MARK: - Refraction
@@ -186,34 +217,68 @@ float3 sampleWithChromaticAberration(
  @return RGB color contribution from this blob
  @note Uses layered specular with different exponents for varied shine.
        Phong model: I = ks × (R·V)^n. Higher n = tighter highlights.
+       Enhanced for pill shape with bolder visibility.
  */
 float3 calculateBlobSpecular(float2 pixelPos, constant BlobUniforms &blob, thread float &specular) {
-    if (blob.radius <= 0.0) return float3(0.0);
+    if (blob.size.y <= 0.0) return float3(0.0);
 
-    float d = length(pixelPos - blob.position) / blob.radius;
-    float glow = saturate(1.0 - d);
+    // Use rounded rect SDF for pill shape
+    float2 pos = pixelPos - blob.position;
+    float cornerRadius = blob.size.y;
+    float sdf = sdRoundedRect(pos, blob.size, cornerRadius);
+    float normalizedDist = sdf / min(blob.size.x, blob.size.y);
+    float glow = saturate(1.0 - normalizedDist - 1.0);
 
-    specular += pow(glow, 2.0) * blob.intensity * 0.5;
-    specular += pow(glow, 4.0) * blob.intensity * 0.8;
+    // Enhanced specular layers for bolder appearance
+    specular += pow(glow, 1.5) * blob.intensity * 0.7;
+    specular += pow(glow, 3.0) * blob.intensity * 1.0;
 
-    float3 color = float3(1.0) * pow(glow, 3.0) * 0.6;
+    float3 color = float3(1.0) * pow(glow, 2.0) * 0.8;
 
-    float rim = smoothstep(0.7, 1.0, glow) * smoothstep(1.0, 0.85, glow);
-    color += float3(1.0) * rim * 0.4;
+    // Sharper rim highlight for pill edges
+    float rim = smoothstep(0.6, 0.9, glow) * smoothstep(1.0, 0.8, glow);
+    color += float3(1.0) * rim * 0.6;
 
     return color;
 }
 
 /**
- Applies blob fill tint to color.
+ Applies blob fill tint to color for bold visibility.
  @param color Input color
  @param blobSdf Distance to blob
  @return Tinted color
  @note Uses smoothstep for Hermite interpolation: 3t² - 2t³
+       Enhanced for bolder appearance with sharper transition.
  */
 float3 applyBlobFill(float3 color, float blobSdf) {
-    float fill = smoothstep(30.0, -10.0, blobSdf);
-    return mix(color, color + float3(0.15, 0.15, 0.2), fill * 0.4);
+    // Sharper transition for more defined edge
+    float fill = smoothstep(10.0, -5.0, blobSdf);
+    // Stronger tint for bold visibility
+    float3 tint = float3(0.2, 0.2, 0.3);
+    return mix(color, color + tint, fill * 0.5);
+}
+
+/**
+ Applies solid fill for unselected tabs.
+ @param color Input color
+ @param pixelPos Current pixel position
+ @param tabs Tab uniforms with positions and fill settings
+ @return Color with unselected tab fills applied
+ */
+float3 applyUnselectedFills(float3 color, float2 pixelPos, constant TabUniforms &tabs) {
+    for (int i = 0; i < tabs.count && i < 8; i++) {
+        // Skip selected tab (it has the blob)
+        if (i == tabs.selectedIndex) continue;
+
+        float2 pos = pixelPos - tabs.positions[i];
+        float sdf = sdSquircle(pos, float2(tabs.fillRadius), 4.0);
+
+        // Soft fill for unselected tabs
+        float fill = smoothstep(5.0, -10.0, sdf);
+        // Gray tint for unselected tabs
+        color = mix(color, color + float3(0.1), fill * tabs.fillOpacity);
+    }
+    return color;
 }
 
 // MARK: - Edge Effects
@@ -271,7 +336,8 @@ fragment float4 liquidGlassTabBarFragment(
     sampler linearSampler [[sampler(0)]],
     constant GlassUniforms &glass [[buffer(0)]],
     constant BlobUniforms &blob1 [[buffer(1)]],
-    constant BlobUniforms &blob2 [[buffer(2)]]
+    constant BlobUniforms &blob2 [[buffer(2)]],
+    constant TabUniforms &tabs [[buffer(3)]]
 ) {
     const float kSmearStrength = 8.0;
     const float kChromaticStrength = 4.0;
@@ -287,16 +353,41 @@ fragment float4 liquidGlassTabBarFragment(
     float2 halfSize = glass.glassSize * 0.5;
     float glassSdf = sdRoundedRect(relativePos, halfSize, glass.cornerRadius);
 
-    // Early discard
-    if (glassSdf > 1.0) discard_fragment();
-    float alpha = saturate(-glassSdf * 32.0);
-    if (alpha <= 0.0) discard_fragment();
-
-    // Blob SDFs
+    // Calculate blob SDFs BEFORE discard check (blob can overflow outside glass)
     float blob1Sdf = calculateBlobSdf(pixelPos, blob1);
     float blob2Sdf = calculateBlobSdf(pixelPos, blob2);
-    float blendK = max(min(blob1.radius, blob2.radius) * 0.8, 20.0);
+    float blendK = max(min(blob1.size.y, blob2.size.y) * 0.8, 20.0);
     float blobSdf = smin(blob1Sdf, blob2Sdf, blendK);
+
+    // Check regions
+    bool insideGlass = glassSdf < 1.0;
+    bool insideBlob = blobSdf < 0.0;
+
+    // Discard only if outside BOTH glass and blob
+    if (!insideGlass && !insideBlob) {
+        discard_fragment();
+    }
+
+    // Handle blob overflow region (outside glass, inside blob)
+    if (!insideGlass && insideBlob) {
+        // Sample backdrop without refraction effects
+        float3 color = backdropTexture.sample(linearSampler, uv).rgb;
+
+        // Apply blob fill and specular (no glass effects)
+        color = applyBlobFill(color, blobSdf);
+        float specular = 0.0;
+        color += calculateBlobSpecular(pixelPos, blob1, specular);
+        color += calculateBlobSpecular(pixelPos, blob2, specular);
+        color += specular * glass.specularIntensity * 0.6;
+
+        // Blob alpha based on distance (soft edge)
+        float blobAlpha = saturate(-blobSdf * 8.0);
+        return float4(color, blobAlpha);
+    }
+
+    // Normal glass rendering (inside glass bounds)
+    float alpha = saturate(-glassSdf * 32.0);
+    if (alpha <= 0.0) discard_fragment();
 
     // Edge proximity (1 at edge, 0 toward center)
     float distFromEdge = -glassSdf;
@@ -328,7 +419,10 @@ fragment float4 liquidGlassTabBarFragment(
     // Edge effects
     color += calculateEdgeEffects(glassSdf, easedProximity);
 
-    // Blob effects
+    // Unselected tab fills (gray tint for non-selected tabs)
+    color = applyUnselectedFills(color, pixelPos, tabs);
+
+    // Blob effects (selected tab)
     color = applyBlobFill(color, blobSdf);
     float specular = 0.0;
     color += calculateBlobSpecular(pixelPos, blob1, specular);

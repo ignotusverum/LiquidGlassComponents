@@ -30,9 +30,18 @@ final class LiquidGlassTabBar: UIView {
 
     private var backdropLayer: CALayer?
     private var tintLayer: CALayer!
+    private var metalContainerView: UIView!  // Larger than bounds to allow blob overflow
     private var metalView: MTKView!
     private var edgeLayer: CAGradientLayer!
     private var contentView: UIView!
+
+    // MARK: - Overflow Configuration
+
+    /// How much the blob can overflow outside the tab bar bounds (in points)
+    private let overflowPadding: CGFloat = 30
+
+    /// Vertical padding so blob fits within bounds at normal scale (4pt top + 4pt bottom)
+    private let blobVerticalPadding: CGFloat = 8
 
     // MARK: - IOSurface Texture Pool (GPU-accelerated capture)
 
@@ -49,6 +58,7 @@ final class LiquidGlassTabBar: UIView {
     private let blob2Animator = SpringAnimator()
     private let blob1RadiusAnimator = RadiusAnimator()
     private let blob2RadiusAnimator = RadiusAnimator()
+    private let blobScaleAnimator = ScaleAnimator()
 
     // MARK: - Tab Buttons (Dual Layer for Mask Effect)
 
@@ -87,8 +97,7 @@ final class LiquidGlassTabBar: UIView {
     // MARK: - Setup
 
     private func setup() {
-        clipsToBounds = true
-        layer.cornerRadius = configuration.cornerRadius
+        clipsToBounds = false  // Allow blob to overflow outside tab bar
         layer.cornerCurve = .continuous
 
         setupBackdropLayer()
@@ -142,13 +151,22 @@ final class LiquidGlassTabBar: UIView {
             return
         }
 
-        metalView = MTKView(frame: bounds, device: device)
+        // Container allows blob to overflow outside tab bar bounds
+        metalContainerView = UIView()
+        metalContainerView.clipsToBounds = false
+        metalContainerView.backgroundColor = .clear
+        metalContainerView.isUserInteractionEnabled = false
+        addSubview(metalContainerView)
+
+        // Metal view fills the container (larger than tab bar)
+        metalView = MTKView(frame: .zero, device: device)
         metalView.isOpaque = false
         metalView.backgroundColor = .clear
         metalView.framebufferOnly = false
         metalView.preferredFramesPerSecond = configuration.preferredFPS
         metalView.isPaused = false
         metalView.enableSetNeedsDisplay = false
+        metalView.clipsToBounds = false  // Allow blob to render outside
 
         renderer = LiquidGlassRenderer(device: device)
         metalView.delegate = renderer
@@ -161,7 +179,7 @@ final class LiquidGlassTabBar: UIView {
             self?.updateUniforms()
         }
 
-        addSubview(metalView)
+        metalContainerView.addSubview(metalView)
     }
 
     private func setupEdgeLayer() {
@@ -215,18 +233,35 @@ final class LiquidGlassTabBar: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
 
+        // Pill shape: corner radius = half height
+        let pillRadius = bounds.height / 2
+
+        // Update main layer corner radius
+        layer.cornerRadius = pillRadius
+
         backdropLayer?.frame = bounds
+        backdropLayer?.cornerRadius = pillRadius
+
         tintLayer?.frame = bounds
-        metalView?.frame = bounds
+        tintLayer?.cornerRadius = pillRadius
+
+        // Metal container is larger to allow blob overflow
+        let containerFrame = bounds.insetBy(dx: -overflowPadding, dy: -overflowPadding)
+        metalContainerView?.frame = containerFrame
+        metalView?.frame = metalContainerView?.bounds ?? bounds
+
         edgeLayer?.frame = bounds
+        edgeLayer?.cornerRadius = pillRadius
+
         normalContentView?.frame = bounds
         highlightContentView?.frame = bounds
+        highlightContentView?.clipsToBounds = false  // Allow blob to overflow
 
-        // Update edge mask path
+        // Update edge mask path with pill radius
         if let mask = edgeLayer?.mask as? CAShapeLayer {
             let path = UIBezierPath(
                 roundedRect: bounds.insetBy(dx: 1, dy: 1),
-                cornerRadius: configuration.cornerRadius - 1
+                cornerRadius: pillRadius - 1
             )
             mask.path = path.cgPath
         }
@@ -404,6 +439,7 @@ final class LiquidGlassTabBar: UIView {
         blob2Animator.step()
         blob1RadiusAnimator.step()
         blob2RadiusAnimator.step()
+        blobScaleAnimator.step()
 
         // Handle transition completion: fade out blob2 when blob1 arrives
         if isTransitioning {
@@ -424,32 +460,40 @@ final class LiquidGlassTabBar: UIView {
         captureBackdropSnapshot()
     }
 
-    /// Updates the mask layer to match current blob position/radius
+    /// Updates the mask layer to match current blob position using pill shape matching container
     private func updateBlobMask() {
         let blobPath = UIBezierPath()
+        let blobScale = blobScaleAnimator.current
 
-        // Add blob1 circle
-        let blob1Radius = blob1RadiusAnimator.current
-        if blob1Radius > 0 {
-            blobPath.addArc(
-                withCenter: blob1Animator.current,
-                radius: blob1Radius,
-                startAngle: 0,
-                endAngle: .pi * 2,
-                clockwise: true
+        // Get button width for blob width
+        let buttonWidth: CGFloat = normalTabButtons.isEmpty ? bounds.width / 4 : normalTabButtons[0].frame.width
+        // Base blob height fits within bounds with padding (scale 1.0 = within bounds)
+        let baseHeight = bounds.height - blobVerticalPadding
+
+        // Helper to create pill-shaped path matching container style
+        func addPillPath(center: CGPoint, scale: CGFloat) {
+            // Width stays same, height scales (grows outside container when scale > 1.0)
+            let width = buttonWidth * 0.9  // Slightly smaller than button
+            let height = baseHeight * scale
+            let rect = CGRect(
+                x: center.x - width / 2,
+                y: center.y - height / 2,
+                width: width,
+                height: height
             )
+            // Pill shape: cornerRadius = height/2
+            let pill = UIBezierPath(roundedRect: rect, cornerRadius: height / 2)
+            blobPath.append(pill)
         }
 
-        // Add blob2 circle (during transitions)
-        let blob2Radius = blob2RadiusAnimator.current
-        if blob2Radius > 0 {
-            blobPath.addArc(
-                withCenter: blob2Animator.current,
-                radius: blob2Radius,
-                startAngle: 0,
-                endAngle: .pi * 2,
-                clockwise: true
-            )
+        // Add blob1 pill with scale applied (grows outside when pressed/dragged)
+        if blob1RadiusAnimator.current > 0 {
+            addPillPath(center: blob1Animator.current, scale: blobScale)
+        }
+
+        // Add blob2 pill (during transitions, no scale applied)
+        if blob2RadiusAnimator.current > 0 {
+            addPillPath(center: blob2Animator.current, scale: 1.0)
         }
 
         // Update mask without implicit animation
@@ -469,6 +513,8 @@ final class LiquidGlassTabBar: UIView {
             isDragging = true
             // Move blob to finger position immediately
             blob1Animator.setPosition(location, animated: false)
+            // Scale up when dragging starts
+            blobScaleAnimator.setScale(configuration.blobDragScale, animated: true)
 
         case .changed:
             // Move blob to follow finger
@@ -476,6 +522,8 @@ final class LiquidGlassTabBar: UIView {
 
         case .ended, .cancelled:
             isDragging = false
+            // Scale back down to normal (fits within bounds)
+            blobScaleAnimator.setScale(1.0, animated: true)
 
             // Snap to nearest tab
             let nearestIndex = indexOfNearestTab(to: location)
@@ -510,34 +558,60 @@ final class LiquidGlassTabBar: UIView {
 
         // Get scale factor for Metal coordinates (drawable uses pixels, not points)
         let scale = metalView?.contentScaleFactor ?? 1.0
+        let blobScale = blobScaleAnimator.current
 
-        // Update blob1 - convert points to pixels
+        // Offset for container (blob positions need to be offset by padding)
+        let paddingOffset = overflowPadding * scale
+
+        // Calculate blob size: width based on button, height with padding (fits within at scale 1.0)
+        let buttonWidth: CGFloat = normalTabButtons.isEmpty ? bounds.width / 4 : normalTabButtons[0].frame.width
+        let blobWidth = buttonWidth * 0.9  // Slightly smaller than button
+        let baseHeight = bounds.height - blobVerticalPadding  // Fits within bounds at scale 1.0
+        let blobHeight = baseHeight * blobScale  // Overflows when scale > 1.0
+
+        // Update blob1 - convert points to pixels, offset by container padding
         let blob1Pos = CGPoint(
-            x: blob1Animator.current.x * scale,
-            y: blob1Animator.current.y * scale
+            x: blob1Animator.current.x * scale + paddingOffset,
+            y: blob1Animator.current.y * scale + paddingOffset
         )
+        let blob1Size = CGSize(width: blobWidth * scale, height: blobHeight * scale)
         renderer.blob1Uniforms = BlobUniforms(
             position: blob1Pos,
-            radius: blob1RadiusAnimator.current * scale,
+            size: blob1Size,
             intensity: configuration.blobIntensity
         )
 
-        // Update blob2 - convert points to pixels
+        // Update blob2 - convert points to pixels, offset by container padding
         let blob2Pos = CGPoint(
-            x: blob2Animator.current.x * scale,
-            y: blob2Animator.current.y * scale
+            x: blob2Animator.current.x * scale + paddingOffset,
+            y: blob2Animator.current.y * scale + paddingOffset
         )
+        let blob2Size = CGSize(width: blobWidth * scale, height: baseHeight * scale)  // Uses same padded height
         renderer.blob2Uniforms = BlobUniforms(
             position: blob2Pos,
-            radius: blob2RadiusAnimator.current * scale,
+            size: blob2Size,
             intensity: configuration.blobIntensity
         )
+
+        // Update tab uniforms for unselected fills (also offset by padding)
+        renderer.tabUniforms.count = Int32(min(normalTabButtons.count, 8))
+        renderer.tabUniforms.selectedIndex = Int32(selectedIndex)
+        renderer.tabUniforms.fillRadius = Float(blobWidth * scale * 0.4)  // Smaller fill for unselected
+        renderer.tabUniforms.fillOpacity = Float(configuration.unselectedFillOpacity)
+
+        for (index, button) in normalTabButtons.enumerated() where index < 8 {
+            let pos = CGPoint(
+                x: button.center.x * scale + paddingOffset,
+                y: button.center.y * scale + paddingOffset
+            )
+            renderer.tabUniforms.setPosition(index, pos)
+        }
 
         // Debug logging (every 60 frames to avoid spam)
         debugLogCounter += 1
         if debugLogCounter % 60 == 0 {
-            print("[LiquidGlass] Scale: \(scale), Blob1: pos=\(blob1Pos), radius=\(blob1RadiusAnimator.current * scale)")
-            print("[LiquidGlass] ViewSize (pixels): \(bounds.size.width * scale) x \(bounds.size.height * scale)")
+            print("[LiquidGlass] Scale: \(scale), BlobScale: \(blobScale), Blob1: pos=\(blob1Pos), size=\(blob1Size)")
+            print("[LiquidGlass] ContainerSize (pixels): \((bounds.width + overflowPadding * 2) * scale) x \((bounds.height + overflowPadding * 2) * scale)")
         }
     }
 
@@ -547,10 +621,32 @@ final class LiquidGlassTabBar: UIView {
         // Get scale factor - drawable uses pixels, not points
         let scale = metalView?.contentScaleFactor ?? 1.0
 
-        renderer.glassUniforms.viewSize = SIMD2<Float>(Float(bounds.width * scale), Float(bounds.height * scale))
-        renderer.glassUniforms.glassOrigin = SIMD2<Float>(0, 0)
-        renderer.glassUniforms.glassSize = SIMD2<Float>(Float(bounds.width * scale), Float(bounds.height * scale))
-        renderer.glassUniforms.cornerRadius = Float(configuration.cornerRadius * scale)
+        // Use pill radius (height/2) for shader corner radius
+        let pillRadius = bounds.height / 2
+
+        // Container is larger than tab bar by overflowPadding on each side
+        let containerWidth = bounds.width + overflowPadding * 2
+        let containerHeight = bounds.height + overflowPadding * 2
+
+        // View size is the full container size (allows blob to render outside)
+        renderer.glassUniforms.viewSize = SIMD2<Float>(
+            Float(containerWidth * scale),
+            Float(containerHeight * scale)
+        )
+
+        // Glass origin is offset by padding (glass rect is inside the container)
+        renderer.glassUniforms.glassOrigin = SIMD2<Float>(
+            Float(overflowPadding * scale),
+            Float(overflowPadding * scale)
+        )
+
+        // Glass size is the original tab bar size
+        renderer.glassUniforms.glassSize = SIMD2<Float>(
+            Float(bounds.width * scale),
+            Float(bounds.height * scale)
+        )
+
+        renderer.glassUniforms.cornerRadius = Float(pillRadius * scale)
         renderer.glassUniforms.refractionStrength = Float(configuration.refractionStrength)
         renderer.glassUniforms.specularIntensity = Float(configuration.specularIntensity)
     }
@@ -566,21 +662,16 @@ final class LiquidGlassTabBar: UIView {
     }
 
     private func applyConfiguration() {
-        layer.cornerRadius = configuration.cornerRadius
+        // Corner radius is set in layoutSubviews() as pill shape (height/2)
 
-        // Update backdrop
+        // Update backdrop blur settings
         if let backdrop = backdropLayer {
-            backdrop.cornerRadius = configuration.cornerRadius
             BackdropLayerWrapper.updateBlurIntensity(configuration.blurIntensity, on: backdrop)
             BackdropLayerWrapper.updateSaturation(configuration.saturationBoost, on: backdrop)
         }
 
-        // Update tint
+        // Update tint color
         tintLayer?.backgroundColor = configuration.tintColor.withAlphaComponent(configuration.tintOpacity).cgColor
-        tintLayer?.cornerRadius = configuration.cornerRadius
-
-        // Update edge
-        edgeLayer?.cornerRadius = configuration.cornerRadius
 
         // Update Metal view FPS
         metalView?.preferredFramesPerSecond = configuration.preferredFPS
@@ -611,14 +702,26 @@ final class LiquidGlassTabBar: UIView {
 
         let scale = metalView?.contentScaleFactor ?? 2.0
 
+        // Container size includes overflow padding
+        let containerSize = CGSize(
+            width: bounds.width + overflowPadding * 2,
+            height: bounds.height + overflowPadding * 2
+        )
+
         // Get IOSurface-backed context (reuses existing if size matches)
-        guard let context = pool.getContext(size: bounds.size, scale: scale) else { return }
+        guard let context = pool.getContext(size: containerSize, scale: scale) else { return }
 
         // Lock IOSurface for CPU access
         pool.lockForCPU()
 
-        // Get the rect of this view in superview's coordinate space
-        let rectInSuperview = convert(bounds, to: superview)
+        // Get the rect of container in superview's coordinate space (includes overflow)
+        let containerRect = CGRect(
+            x: -overflowPadding,
+            y: -overflowPadding,
+            width: containerSize.width,
+            height: containerSize.height
+        )
+        let rectInSuperview = convert(containerRect, to: superview)
 
         // Hide self temporarily so we capture what's behind
         layer.isHidden = true

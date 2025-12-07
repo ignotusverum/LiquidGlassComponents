@@ -29,19 +29,53 @@ struct GlassUniforms {
 /// Matches BlobUniforms in Shaders.metal
 struct BlobUniforms {
     var position: SIMD2<Float>
-    var radius: Float
+    var size: SIMD2<Float>     // half-width, half-height (for pill shape)
     var intensity: Float
+    var _padding: Float = 0    // alignment
 
     init() {
         position = .zero
-        radius = 0
+        size = .zero
         intensity = 0
     }
 
-    init(position: CGPoint, radius: CGFloat, intensity: CGFloat) {
+    init(position: CGPoint, size: CGSize, intensity: CGFloat) {
         self.position = SIMD2<Float>(Float(position.x), Float(position.y))
-        self.radius = Float(radius)
+        self.size = SIMD2<Float>(Float(size.width / 2), Float(size.height / 2))  // half-size
         self.intensity = Float(intensity)
+    }
+}
+
+/// Matches TabUniforms in Shaders.metal - for unselected tab fills
+struct TabUniforms {
+    var positions: (SIMD2<Float>, SIMD2<Float>, SIMD2<Float>, SIMD2<Float>,
+                    SIMD2<Float>, SIMD2<Float>, SIMD2<Float>, SIMD2<Float>)  // 8 tab positions
+    var count: Int32
+    var selectedIndex: Int32
+    var fillRadius: Float
+    var fillOpacity: Float
+
+    init() {
+        positions = (.zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero)
+        count = 0
+        selectedIndex = 0
+        fillRadius = 40
+        fillOpacity = 0.15
+    }
+
+    mutating func setPosition(_ index: Int, _ position: CGPoint) {
+        let pos = SIMD2<Float>(Float(position.x), Float(position.y))
+        switch index {
+        case 0: positions.0 = pos
+        case 1: positions.1 = pos
+        case 2: positions.2 = pos
+        case 3: positions.3 = pos
+        case 4: positions.4 = pos
+        case 5: positions.5 = pos
+        case 6: positions.6 = pos
+        case 7: positions.7 = pos
+        default: break
+        }
     }
 }
 
@@ -82,6 +116,38 @@ struct LiquidGlassConfiguration {
 
     /// Blob intensity (affects specular brightness)
     var blobIntensity: CGFloat = 1.0
+
+    // MARK: - Squircle Shape
+
+    /// Superellipse exponent for squircle shape (4.0 = iOS-style)
+    var squircleExponent: CGFloat = 4.0
+
+    // MARK: - Bold Visibility
+
+    /// Blob fill opacity for visibility enhancement
+    var blobFillOpacity: CGFloat = 0.25
+
+    /// Blob edge highlight intensity
+    var blobEdgeIntensity: CGFloat = 0.5
+
+    // MARK: - Unselected Tab Fill
+
+    /// Fill color for unselected tabs (gray tint)
+    var unselectedFillColor: UIColor = .systemGray5
+
+    /// Opacity of unselected tab fill
+    var unselectedFillOpacity: CGFloat = 0.15
+
+    /// Whether to show fills for unselected tabs
+    var showUnselectedFills: Bool = true
+
+    // MARK: - Scale Effects (Hover/Press)
+
+    /// Scale factor when blob is pressed
+    var blobPressedScale: CGFloat = 1.15
+
+    /// Scale factor when blob is being dragged
+    var blobDragScale: CGFloat = 1.25
 
     // MARK: - Shape
 

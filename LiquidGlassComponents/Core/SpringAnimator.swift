@@ -163,3 +163,77 @@ final class RadiusAnimator {
         }
     }
 }
+
+// MARK: - Scale Animator
+
+/// Spring-based animator for blob scale effects (hover/press)
+final class ScaleAnimator {
+
+    // MARK: - State
+
+    /// Current animated scale
+    private(set) var current: CGFloat = 1.0
+
+    /// Target scale
+    var target: CGFloat = 1.0
+
+    /// Current velocity
+    private var velocity: CGFloat = 0.0
+
+    /// Last update time
+    private var lastTime: CFTimeInterval = 0
+
+    // MARK: - Spring Parameters
+
+    /// Stiffness affects snap speed (higher = faster return to target)
+    var stiffness: CGFloat = 400.0
+
+    /// Damping affects oscillation (higher = less bounce)
+    var damping: CGFloat = 25.0
+
+    /// Whether the spring has settled
+    var isSettled: Bool {
+        abs(current - target) < 0.001 && abs(velocity) < 0.001
+    }
+
+    // MARK: - Animation
+
+    /// Step the spring simulation forward by one frame
+    func step() {
+        let now = CACurrentMediaTime()
+
+        let dt: CGFloat
+        if lastTime == 0 {
+            dt = 1.0 / 120.0
+        } else {
+            dt = min(CGFloat(now - lastTime), 1.0 / 30.0)
+        }
+        lastTime = now
+
+        let displacement = current - target
+        let springForce = -stiffness * displacement
+        let dampingForce = -damping * velocity
+        let acceleration = springForce + dampingForce
+
+        velocity += acceleration * dt
+        current += velocity * dt
+    }
+
+    /// Set scale immediately or animate to it
+    func setScale(_ scale: CGFloat, animated: Bool) {
+        target = scale
+        if !animated {
+            current = scale
+            velocity = 0
+            lastTime = 0
+        }
+    }
+
+    /// Reset to default scale
+    func reset() {
+        current = 1.0
+        target = 1.0
+        velocity = 0
+        lastTime = 0
+    }
+}
