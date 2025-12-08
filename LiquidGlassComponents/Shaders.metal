@@ -15,6 +15,9 @@ struct GlassUniforms {
     float  cornerRadius;
     float  refractionStrength;
     float  specularIntensity;
+    float2 scrollVelocity;  // normalized velocity (-1 to 1) for slime deformation
+    float  time;            // CACurrentMediaTime() for wobble animation
+    float  _padding;        // alignment
 };
 
 struct SdfUniforms {
@@ -32,13 +35,59 @@ struct TabUniforms {
     float  fillOpacity;
 };
 
-// MARK: - Glass Effect Constants (percentages of blob size)
+// MARK: - Glass Effect Constants
 
 namespace GlassEffects {
-    constant float smearPercent = 0.04;           // 4% of blob height
-    constant float chromaticPercent = 0.02;       // 2% of blob height
-    constant float refractionMultiplier = 12.0;   // Refraction strength multiplier
-    constant float paddingPercent = 0.08;         // 8% edge padding
+    // Refraction (Snell's Law)
+    constant float airRefractiveIndex = 1.0;
+    constant float glassRefractiveIndex = 1.5;
+    constant float proximityEasing = 0.6;
+    constant float incidentAngleMultiplier = 1.4;
+    constant float refractionZonePercent = 0.55;
+    constant float refractionMultiplier = 12.0;
+    constant float paddingPercent = 0.08;
+
+    // Chromatic Aberration & Smear (% of blob height)
+    constant float smearPercent = 0.04;
+    constant float chromaticPercent = 0.02;
+    constant float smearSpacing = 0.5;
+
+    // Edge Effects
+    constant float fresnelExponent = 2.5;
+    constant float fresnelIntensity = 0.15;
+    constant float edgeMaskWidth = 6.0;
+    constant float edgeMaskIntensity = 0.15;
+    constant float borderOuter = 2.0;
+    constant float borderInner = 1.0;
+    constant float borderIntensity = 0.5;
+
+    // SDF Fill
+    constant float fillTransitionOuter = 10.0;
+    constant float fillTransitionInner = -5.0;
+    constant float3 fillTint = float3(0.2, 0.2, 0.3);
+    constant float fillOpacity = 0.5;
+
+    // SDF Specular
+    constant float specularExp1 = 1.5;
+    constant float specularWeight1 = 0.7;
+    constant float specularExp2 = 3.0;
+    constant float specularWeight2 = 1.0;
+    constant float baseGlowExp = 2.0;
+    constant float baseGlowIntensity = 0.8;
+    constant float rimIntensity = 0.6;
+    constant float specularMultiplier = 0.6;
+
+    // Alpha & Blending
+    constant float glassAlphaSharpness = 32.0;
+    constant float sdfAlphaSharpness = 8.0;
+    constant float sdfBlendMinK = 20.0;
+    constant float sdfBlendFactor = 0.8;
+
+    // Squircle (unselected tabs)
+    constant float squircleExponent = 4.0;
+    constant float unselectedFillOuter = 5.0;
+    constant float unselectedFillInner = -10.0;
+    constant float3 unselectedTint = float3(0.1);
 }
 
 // MARK: - SDF Functions
@@ -55,6 +104,44 @@ namespace GlassEffects {
 float sdRoundedRect(float2 pos, float2 halfSize, float radius) {
     radius = min(radius, min(halfSize.x, halfSize.y));
     float2 q = abs(pos) - halfSize + radius;
+    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
+}
+
+/**
+ Squash and stretch based on velocity with volume preservation.
+ @param pos Position relative to shape center (pixels)
+ @param halfSize Half of shape size (pixels)
+ @param cornerRadius Corner radius (pixels)
+ @param velocityX Normalized X velocity (-1 to 1)
+ @param deformAmount Deformation strength (e.g., 0.35)
+ @return Signed distance with squash/stretch applied
+ @note Width expands/shrinks while height does the opposite (volume preservation).
+ */
+float sdSquashStretch(
+    float2 pos,
+    float2 halfSize,
+    float cornerRadius,
+    float velocityX,
+    float deformAmount
+) {
+    float widthMult  = 1.0 + velocityX * deformAmount;
+    float heightMult = 1.0 - velocityX * deformAmount * 0.75;  // Volume preservation
+
+    // Safety limits
+    widthMult  = clamp(widthMult, 0.65, 1.5);
+    heightMult = clamp(heightMult, 0.75, 1.35);
+
+    float2 deformedHalfSize = float2(
+        halfSize.x * widthMult,
+        halfSize.y * heightMult
+    );
+
+    // Offset in movement direction (leading edge moves more)
+    float offset = halfSize.x * (widthMult - 1.0) * 0.25;
+    float2 adjustedPos = pos - float2(offset, 0.0);
+
+    float radius = min(cornerRadius, min(deformedHalfSize.x, deformedHalfSize.y));
+    float2 q = abs(adjustedPos) - deformedHalfSize + radius;
     return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
 }
 
@@ -143,13 +230,10 @@ float2 calculateRefractedUV(
     float refractionMultiplier,
     float paddingAmount
 ) {
-    const float kAirRefractiveIndex = 1.0;
-    const float kGlassRefractiveIndex = 1.5;
-
-    float easedProximity = pow(proximity, 0.6);
-    float incidentAngle = proximity * 1.4;
+    float easedProximity = pow(proximity, GlassEffects::proximityEasing);
+    float incidentAngle = proximity * GlassEffects::incidentAngleMultiplier;
     float sinTheta1 = sin(incidentAngle);
-    float sinTheta2 = snellRefract(sinTheta1, kAirRefractiveIndex, kGlassRefractiveIndex);
+    float sinTheta2 = snellRefract(sinTheta1, GlassEffects::airRefractiveIndex, GlassEffects::glassRefractiveIndex);
     float theta2 = asin(sinTheta2);
     float bendAmount = incidentAngle - theta2;
 
@@ -199,7 +283,7 @@ float3 sampleWithChromaticAberration(
     float3 color = float3(0.0);
 
     for (int i = 0; i < kSamples; i++) {
-        float offset = (float(i) - 4.0) * smearAmount * 0.5;  // tighter spacing
+        float offset = (float(i) - 4.0) * smearAmount * GlassEffects::smearSpacing;
         float2 smearOffset = tangentDir * offset / viewSize;
 
         float2 rUV = clamp(redUV + smearOffset, 0.001, 0.999);
@@ -239,14 +323,14 @@ float3 calculateSdfSpecular(float2 pixelPos, constant SdfUniforms &sdfShape, thr
     float glow = saturate(1.0 - normalizedDist - 1.0);
 
     // Enhanced specular layers for bolder appearance
-    specular += pow(glow, 1.5) * sdfShape.intensity * 0.7;
-    specular += pow(glow, 3.0) * sdfShape.intensity * 1.0;
+    specular += pow(glow, GlassEffects::specularExp1) * sdfShape.intensity * GlassEffects::specularWeight1;
+    specular += pow(glow, GlassEffects::specularExp2) * sdfShape.intensity * GlassEffects::specularWeight2;
 
-    float3 color = float3(1.0) * pow(glow, 2.0) * 0.8;
+    float3 color = float3(1.0) * pow(glow, GlassEffects::baseGlowExp) * GlassEffects::baseGlowIntensity;
 
     // Sharper rim highlight for pill edges
     float rim = smoothstep(0.6, 0.9, glow) * smoothstep(1.0, 0.8, glow);
-    color += float3(1.0) * rim * 0.6;
+    color += float3(1.0) * rim * GlassEffects::rimIntensity;
 
     return color;
 }
@@ -261,10 +345,9 @@ float3 calculateSdfSpecular(float2 pixelPos, constant SdfUniforms &sdfShape, thr
  */
 float3 applySdfFill(float3 color, float sdfDist) {
     // Sharper transition for more defined edge
-    float fill = smoothstep(10.0, -5.0, sdfDist);
+    float fill = smoothstep(GlassEffects::fillTransitionOuter, GlassEffects::fillTransitionInner, sdfDist);
     // Stronger tint for bold visibility
-    float3 tint = float3(0.2, 0.2, 0.3);
-    return mix(color, color + tint, fill * 0.5);
+    return mix(color, color + GlassEffects::fillTint, fill * GlassEffects::fillOpacity);
 }
 
 /**
@@ -280,12 +363,12 @@ float3 applyUnselectedFills(float3 color, float2 pixelPos, constant TabUniforms 
         if (i == tabs.selectedIndex) continue;
 
         float2 pos = pixelPos - tabs.positions[i];
-        float sdf = sdSquircle(pos, float2(tabs.fillRadius), 4.0);
+        float sdf = sdSquircle(pos, float2(tabs.fillRadius), GlassEffects::squircleExponent);
 
         // Soft fill for unselected tabs
-        float fill = smoothstep(5.0, -10.0, sdf);
+        float fill = smoothstep(GlassEffects::unselectedFillOuter, GlassEffects::unselectedFillInner, sdf);
         // Gray tint for unselected tabs
-        color = mix(color, color + float3(0.1), fill * tabs.fillOpacity);
+        color = mix(color, color + GlassEffects::unselectedTint, fill * tabs.fillOpacity);
     }
     return color;
 }
@@ -305,16 +388,16 @@ float3 calculateEdgeEffects(float glassSdf, float easedProximity) {
     float3 effects = float3(0.0);
 
     // Fresnel highlight
-    float fresnel = pow(easedProximity, 2.5) * 0.15;
+    float fresnel = pow(easedProximity, GlassEffects::fresnelExponent) * GlassEffects::fresnelIntensity;
     effects += float3(1.0) * fresnel;
 
     // Edge highlight
-    float edgeMask = smoothstep(6.0, 0.0, abs(glassSdf));
-    effects += float3(1.0) * edgeMask * 0.15;
+    float edgeMask = smoothstep(GlassEffects::edgeMaskWidth, 0.0, abs(glassSdf));
+    effects += float3(1.0) * edgeMask * GlassEffects::edgeMaskIntensity;
 
     // Border
-    float border = smoothstep(2.0, 0.0, abs(glassSdf)) - smoothstep(1.0, 0.0, abs(glassSdf));
-    effects += float3(1.0) * border * 0.5;
+    float border = smoothstep(GlassEffects::borderOuter, 0.0, abs(glassSdf)) - smoothstep(GlassEffects::borderInner, 0.0, abs(glassSdf));
+    effects += float3(1.0) * border * GlassEffects::borderIntensity;
 
     return effects;
 }
@@ -361,7 +444,7 @@ fragment float4 liquidGlassTabBarFragment(
     float2 glassCenter = glass.glassOrigin + glass.glassSize * 0.5;
     float2 relativePos = pixelPos - glassCenter;
     float2 halfSize = glass.glassSize * 0.5;
-    float glassSdf = sdRoundedRect(relativePos, halfSize, glass.cornerRadius);
+    float glassSdf = sdSquashStretch(relativePos, halfSize, glass.cornerRadius, glass.scrollVelocity.x, 0.35);
 
     // Check if SDF effects are enabled (non-zero size)
     bool sdfEnabled = sdf1.size.y > 0.0 || sdf2.size.y > 0.0;
@@ -370,7 +453,7 @@ fragment float4 liquidGlassTabBarFragment(
     if (sdfEnabled) {
         float sdf1Dist = calculateSdf(pixelPos, sdf1);
         float sdf2Dist = calculateSdf(pixelPos, sdf2);
-        float blendK = max(min(sdf1.size.y, sdf2.size.y) * 0.8, 20.0);
+        float blendK = max(min(sdf1.size.y, sdf2.size.y) * GlassEffects::sdfBlendFactor, GlassEffects::sdfBlendMinK);
         sdfDist = smin(sdf1Dist, sdf2Dist, blendK);
     }
 
@@ -390,21 +473,21 @@ fragment float4 liquidGlassTabBarFragment(
         float specular = 0.0;
         color += calculateSdfSpecular(pixelPos, sdf1, specular);
         color += calculateSdfSpecular(pixelPos, sdf2, specular);
-        color += specular * glass.specularIntensity * 0.6;
-        float sdfAlpha = saturate(-sdfDist * 8.0);
+        color += specular * glass.specularIntensity * GlassEffects::specularMultiplier;
+        float sdfAlpha = saturate(-sdfDist * GlassEffects::sdfAlphaSharpness);
         return float4(color, sdfAlpha);
     }
 
     // Normal glass rendering (inside glass bounds)
-    float alpha = saturate(-glassSdf * 32.0);
+    float alpha = saturate(-glassSdf * GlassEffects::glassAlphaSharpness);
     if (alpha <= 0.0) discard_fragment();
 
     // Edge proximity (1 at edge, 0 toward center)
     float distFromEdge = -glassSdf;
     float maxDist = min(halfSize.x, halfSize.y);
-    float refractionZoneWidth = maxDist * 0.55;
+    float refractionZoneWidth = maxDist * GlassEffects::refractionZonePercent;
     float proximity = 1.0 - saturate(distFromEdge / refractionZoneWidth);
-    float easedProximity = pow(proximity, 0.6);
+    float easedProximity = pow(proximity, GlassEffects::proximityEasing);
 
     // Direction vectors
     float2 towardEdgeDir = normalize(relativePos + 0.001);
@@ -436,7 +519,7 @@ fragment float4 liquidGlassTabBarFragment(
         float specular = 0.0;
         color += calculateSdfSpecular(pixelPos, sdf1, specular);
         color += calculateSdfSpecular(pixelPos, sdf2, specular);
-        color += specular * glass.specularIntensity * 0.6;
+        color += specular * glass.specularIntensity * GlassEffects::specularMultiplier;
     }
 
     return float4(color, alpha);
@@ -462,7 +545,7 @@ fragment float4 liquidGlassSdfFragment(
     // Calculate SDF distances
     float sdf1Dist = calculateSdf(pixelPos, sdf1);
     float sdf2Dist = calculateSdf(pixelPos, sdf2);
-    float blendK = max(min(sdf1.size.y, sdf2.size.y) * 0.8, 20.0);
+    float blendK = max(min(sdf1.size.y, sdf2.size.y) * GlassEffects::sdfBlendFactor, GlassEffects::sdfBlendMinK);
     float sdfDist = smin(sdf1Dist, sdf2Dist, blendK);
 
     // Discard if outside SDF
@@ -478,9 +561,9 @@ fragment float4 liquidGlassSdfFragment(
     float specular = 0.0;
     color += calculateSdfSpecular(pixelPos, sdf1, specular);
     color += calculateSdfSpecular(pixelPos, sdf2, specular);
-    color += specular * glass.specularIntensity * 0.6;
+    color += specular * glass.specularIntensity * GlassEffects::specularMultiplier;
 
     // SDF alpha based on distance (soft edge)
-    float sdfAlpha = saturate(-sdfDist * 8.0);
+    float sdfAlpha = saturate(-sdfDist * GlassEffects::sdfAlphaSharpness);
     return float4(color, sdfAlpha);
 }

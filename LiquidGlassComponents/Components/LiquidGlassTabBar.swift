@@ -12,6 +12,14 @@ protocol LiquidGlassTabBarDelegate: AnyObject {
 
 final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
+    // MARK: - Constants
+
+    private enum Constants {
+        static let blobVerticalPadding: CGFloat = 4
+        static let blobWidthMultiplier: CGFloat = 0.95      // Base width as % of tab width
+        static let expandedThreshold: CGFloat = 1.01        // Scale > this = expanded
+    }
+
     // MARK: - Public Properties
 
     var items: [LiquidGlassTabItem] = [] {
@@ -42,7 +50,6 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
     private var blobView: UIView!                 // Mask shape for maskedContentView
     private let blobAnimator = SpringAnimator()
     private let blobScaleAnimator = ScaleAnimator()
-    private let blobVerticalPadding: CGFloat = 4
     private var maskedTabButtons: [UIButton] = []
 
     // MARK: - IOSurface Texture Pool (GPU-accelerated capture)
@@ -61,9 +68,14 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
     private var tabButtons: [UIButton] = []
 
-    // MARK: - Drag State
+    // MARK: - Touch/Drag State
 
+    private var isTouching: Bool = false
     private var isDragging: Bool = false
+
+    // MARK: - Squash & Stretch
+
+    private let squashStretchAnimator = SquashStretchAnimator()
 
     // MARK: - Double Tap Detection
 
@@ -241,12 +253,18 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
     }
 
     private func setupGestures() {
+        // Long press with 0 duration to detect touch down immediately
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        longPress.minimumPressDuration = 0
+        longPress.delegate = self
+        addGestureRecognizer(longPress)
+
         // Pan for dragging
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
         pan.delegate = self
         addGestureRecognizer(pan)
 
-        // Tap for instant selection (no require(toFail:) - both gestures recognize freely)
+        // Tap for instant selection
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         addGestureRecognizer(tap)
     }
@@ -255,6 +273,40 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         return true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Allow long press + pan to work together
+        return true
+    }
+
+    // MARK: - Long Press (Touch Down Detection)
+
+    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+        let location = gesture.location(in: self)
+
+        switch gesture.state {
+        case .began:
+            // Scale up INSTANTLY on touch (no animation delay)
+            isTouching = true
+            blobScaleAnimator.setScale(configuration.sdfDragScale, animated: false)
+            updateBlobFrame()
+
+        case .ended, .cancelled:
+            isTouching = false
+            // If not dragging, snap to nearest tab and shrink immediately
+            if !isDragging {
+                let nearestIndex = indexOfNearestTab(to: location)
+                // Select without re-expanding, then shrink immediately
+                selectedIndex = nearestIndex
+                blobAnimator.target = centerForTab(at: nearestIndex)
+                delegate?.tabBar(self, didSelectItemAt: nearestIndex)
+                blobScaleAnimator.setScale(1.0, animated: true)
+            }
+
+        default:
+            break
+        }
     }
 
     // MARK: - Layout
@@ -342,10 +394,11 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
         let tabWidth = tabButtons[0].frame.width
         let blobScale = blobScaleAnimator.current
-        let baseHeight = bounds.height - blobVerticalPadding
-        let baseWidth = tabWidth * 0.95
+        let baseHeight = bounds.height - Constants.blobVerticalPadding
+        let baseWidth = tabWidth * Constants.blobWidthMultiplier
 
-        // Blob size - scale both width and height to keep pill shape
+        // Blob size - uniform scale for both width and height
+        let isExpanded = blobScale > Constants.expandedThreshold
         let width = baseWidth * blobScale
         let height = baseHeight * blobScale
 
@@ -359,10 +412,10 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         )
 
         // Toggle between glass effect (expanded) and flat gray (collapsed)
-        let isExpanded = blobScale > 1.01
         blobBackgroundView.isHidden = isExpanded
         metalContainerView?.isHidden = !isExpanded
         metalView?.isPaused = !isExpanded
+        maskedContentView?.isHidden = false  // Always visible - mask handles clipping
 
         // Update both blob views
         blobBackgroundView.frame = frame
@@ -461,6 +514,9 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         // Lock Y to vertical center, clamp X to valid tab range
         let clampedPosition = CGPoint(x: clampedX(location.x), y: bounds.midY)
 
+        // Update squash/stretch animator
+        squashStretchAnimator.handlePan(gesture, in: self)
+
         switch gesture.state {
         case .began:
             isDragging = true
@@ -527,7 +583,10 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
     // MARK: - Animation
 
     @objc private func animationTick() {
-        let needsUpdate = !blobAnimator.isSettled || !blobScaleAnimator.isSettled || isDragging
+        // Update squash/stretch animator (spring physics)
+        squashStretchAnimator.update(deltaTime: 1.0 / 120.0)
+
+        let needsUpdate = !blobAnimator.isSettled || !blobScaleAnimator.isSettled || isDragging || squashStretchAnimator.isActive
 
         // Only step and update when animation is active
         if needsUpdate {
@@ -536,13 +595,13 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
             updateBlobFrame()
         }
 
-        // Shrink when blob stops moving (not dragging)
-        if !isDragging && blobAnimator.isSettled && blobScaleAnimator.current > 1.01 {
+        // Shrink when blob stops moving AND not touching/dragging
+        if !isDragging && !isTouching && blobAnimator.isSettled && blobScaleAnimator.current > Constants.expandedThreshold {
             blobScaleAnimator.setScale(1.0, animated: true)
         }
 
         // Only capture backdrop when expanded (glass effect active)
-        let isExpanded = blobScaleAnimator.current > 1.01
+        let isExpanded = blobScaleAnimator.current > Constants.expandedThreshold
         if isExpanded {
             captureBackdropSnapshot()
         }
@@ -608,6 +667,10 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         renderer.glassUniforms.cornerRadius = Float(pillRadius * scale)
         renderer.glassUniforms.refractionStrength = Float(configuration.refractionStrength)
         renderer.glassUniforms.specularIntensity = Float(configuration.specularIntensity)
+
+        // Squash/stretch effect - use animator's normalized velocity
+        renderer.glassUniforms.scrollVelocity = squashStretchAnimator.normalizedVelocity
+        renderer.glassUniforms.time = Float(CACurrentMediaTime())
     }
 
     // MARK: - Configuration
@@ -642,11 +705,14 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
     /// Cached capture rect for backdrop (tab bar + padding for scaled blob overflow)
     private var captureRect: CGRect {
-        // Calculate padding for scaled blob overflow
-        let baseHeight = bounds.height - blobVerticalPadding
+        let baseHeight = bounds.height - Constants.blobVerticalPadding
         let maxScaledHeight = baseHeight * configuration.sdfDragScale
-        let verticalPadding = (maxScaledHeight - baseHeight) / 2
-        let horizontalPadding = verticalPadding  // Same padding on sides for edge refraction
+
+        // Account for squash/stretch deformation in both dimensions
+        // Height can expand up to 1.35x, width up to 1.5x
+        let verticalPadding = (maxScaledHeight * 1.35 - baseHeight) / 2
+        let horizontalPadding = (maxScaledHeight * 1.5 - baseHeight) / 2
+
         return bounds.insetBy(dx: -horizontalPadding, dy: -verticalPadding)
     }
 
@@ -687,9 +753,10 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         superview.layer.render(in: context)
         context.restoreGState()
 
-        // Restore visibility
-        metalContainerView?.isHidden = false
-        blobBackgroundView?.isHidden = false
+        // Restore visibility based on expanded state
+        let isExpanded = blobScaleAnimator.current > Constants.expandedThreshold
+        metalContainerView?.isHidden = !isExpanded
+        blobBackgroundView?.isHidden = isExpanded
         maskedContentView?.isHidden = false
 
         // Unlock IOSurface

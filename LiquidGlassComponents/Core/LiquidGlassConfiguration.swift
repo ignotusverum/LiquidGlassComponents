@@ -12,8 +12,11 @@ struct GlassUniforms {
     var cornerRadius: Float            // 4 bytes (offset 24)
     var refractionStrength: Float      // 4 bytes (offset 28)
     var specularIntensity: Float       // 4 bytes (offset 32)
-    var _padding: Float = 0            // 4 bytes (offset 36) - align to 8-byte boundary
-    // Total: 40 bytes
+    var _padding: Float = 0            // 4 bytes (offset 36)
+    var scrollVelocity: SIMD2<Float>   // 8 bytes (offset 40) - for slime deformation
+    var time: Float                    // 4 bytes (offset 48) - for wobble animation
+    var _padding2: Float = 0           // 4 bytes (offset 52) - align to 8-byte boundary
+    // Total: 56 bytes
 
     init() {
         viewSize = .zero
@@ -23,6 +26,9 @@ struct GlassUniforms {
         refractionStrength = 1.0
         specularIntensity = 0.6
         _padding = 0
+        scrollVelocity = .zero
+        time = 0
+        _padding2 = 0
     }
 }
 

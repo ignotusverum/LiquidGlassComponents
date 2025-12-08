@@ -36,6 +36,20 @@ final class SpringAnimator {
         return displacement < 0.5 && speed < 0.5
     }
 
+    /// Velocity normalized to -1...1 range for shader slime effect
+    var normalizedVelocity: CGPoint {
+        let maxSpeed: CGFloat = 500  // points/second normalization factor (lowered for more sensitivity)
+        let normalized = CGPoint(
+            x: max(-1, min(1, velocity.x / maxSpeed)),
+            y: max(-1, min(1, velocity.y / maxSpeed))
+        )
+        // Debug log
+        if abs(velocity.x) > 1 || abs(velocity.y) > 1 {
+            print("[SpringAnimator] raw velocity: \(velocity), normalized: \(normalized)")
+        }
+        return normalized
+    }
+
     // MARK: - Initialization
 
     init(mass: CGFloat = 1.0, stiffness: CGFloat = 300.0, damping: CGFloat = 20.0) {
@@ -186,10 +200,10 @@ final class ScaleAnimator {
     // MARK: - Spring Parameters
 
     /// Stiffness affects snap speed (higher = faster return to target)
-    var stiffness: CGFloat = 400.0
+    var stiffness: CGFloat = 2000.0
 
-    /// Damping affects oscillation (higher = less bounce)
-    var damping: CGFloat = 25.0
+    /// Damping affects oscillation (higher = less bounce, ~89 = critical for stiffness 2000)
+    var damping: CGFloat = 80.0
 
     /// Whether the spring has settled
     var isSettled: Bool {
