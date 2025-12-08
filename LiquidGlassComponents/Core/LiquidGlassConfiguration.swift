@@ -52,10 +52,14 @@ struct SdfUniforms {
     }
 }
 
-/// Matches TabUniforms in Shaders.metal - for unselected tab fills
+/// Matches TabUniforms in Shaders.metal - for tab fills with deformation
 struct TabUniforms {
     var positions: (SIMD2<Float>, SIMD2<Float>, SIMD2<Float>, SIMD2<Float>,
                     SIMD2<Float>, SIMD2<Float>, SIMD2<Float>, SIMD2<Float>)  // 8 tab positions
+    var sizes: (SIMD2<Float>, SIMD2<Float>, SIMD2<Float>, SIMD2<Float>,
+                SIMD2<Float>, SIMD2<Float>, SIMD2<Float>, SIMD2<Float>)      // 8 pill sizes (half-width, half-height)
+    var deformX: (Float, Float, Float, Float, Float, Float, Float, Float)    // 8 deformation values
+    var fillAlpha: (Float, Float, Float, Float, Float, Float, Float, Float)  // 8 alpha values
     var count: Int32
     var selectedIndex: Int32
     var fillRadius: Float
@@ -63,6 +67,9 @@ struct TabUniforms {
 
     init() {
         positions = (.zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero)
+        sizes = (.zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero)
+        deformX = (0, 0, 0, 0, 0, 0, 0, 0)
+        fillAlpha = (1, 1, 1, 1, 1, 1, 1, 1)  // Default to visible
         count = 0
         selectedIndex = 0
         fillRadius = 40
@@ -80,6 +87,51 @@ struct TabUniforms {
         case 5: positions.5 = pos
         case 6: positions.6 = pos
         case 7: positions.7 = pos
+        default: break
+        }
+    }
+
+    mutating func setSize(_ index: Int, halfWidth: CGFloat, halfHeight: CGFloat) {
+        let size = SIMD2<Float>(Float(halfWidth), Float(halfHeight))
+        switch index {
+        case 0: sizes.0 = size
+        case 1: sizes.1 = size
+        case 2: sizes.2 = size
+        case 3: sizes.3 = size
+        case 4: sizes.4 = size
+        case 5: sizes.5 = size
+        case 6: sizes.6 = size
+        case 7: sizes.7 = size
+        default: break
+        }
+    }
+
+    mutating func setDeformX(_ index: Int, _ value: CGFloat) {
+        let v = Float(value)
+        switch index {
+        case 0: deformX.0 = v
+        case 1: deformX.1 = v
+        case 2: deformX.2 = v
+        case 3: deformX.3 = v
+        case 4: deformX.4 = v
+        case 5: deformX.5 = v
+        case 6: deformX.6 = v
+        case 7: deformX.7 = v
+        default: break
+        }
+    }
+
+    mutating func setFillAlpha(_ index: Int, _ value: CGFloat) {
+        let v = Float(value)
+        switch index {
+        case 0: fillAlpha.0 = v
+        case 1: fillAlpha.1 = v
+        case 2: fillAlpha.2 = v
+        case 3: fillAlpha.3 = v
+        case 4: fillAlpha.4 = v
+        case 5: fillAlpha.5 = v
+        case 6: fillAlpha.6 = v
+        case 7: fillAlpha.7 = v
         default: break
         }
     }

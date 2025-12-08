@@ -28,7 +28,10 @@ struct SdfUniforms {
 };
 
 struct TabUniforms {
-    float2 positions[8];  // Up to 8 tab center positions
+    float2 positions[8];   // Up to 8 tab center positions
+    float2 sizes[8];       // Individual pill sizes (half-width, half-height)
+    float  deformX[8];     // Squash/stretch deformation per tab (-1 to 1)
+    float  fillAlpha[8];   // Individual alpha for animation (0 to 1)
     int    count;
     int    selectedIndex;
     float  fillRadius;
@@ -351,24 +354,44 @@ float3 applySdfFill(float3 color, float sdfDist) {
 }
 
 /**
- Applies solid fill for unselected tabs.
+ Applies solid fill for tabs using pill shape with deformation.
  @param color Input color
  @param pixelPos Current pixel position
- @param tabs Tab uniforms with positions and fill settings
- @return Color with unselected tab fills applied
+ @param tabs Tab uniforms with positions, sizes, deformation and fill settings
+ @return Color with tab fills applied
+ @note Now renders ALL tabs (including selected) with individual alpha control.
+       Selected tab fill animates in when blob fades out (handoff effect).
  */
 float3 applyUnselectedFills(float3 color, float2 pixelPos, constant TabUniforms &tabs) {
     for (int i = 0; i < tabs.count && i < 8; i++) {
-        // Skip selected tab (it has the blob)
-        if (i == tabs.selectedIndex) continue;
+        float alpha = tabs.fillAlpha[i];
+
+        // Skip tabs with zero alpha (invisible)
+        if (alpha <= 0.0) continue;
 
         float2 pos = pixelPos - tabs.positions[i];
-        float sdf = sdSquircle(pos, float2(tabs.fillRadius), GlassEffects::squircleExponent);
+        float2 halfSize = tabs.sizes[i];
 
-        // Soft fill for unselected tabs
+        // Skip if size not set
+        if (halfSize.y <= 0.0) {
+            // Fallback to fillRadius if size not set
+            halfSize = float2(tabs.fillRadius, tabs.fillRadius * 0.7);
+        }
+
+        // Apply squash/stretch deformation (same formula as blob)
+        float deform = tabs.deformX[i];
+        float widthMult = 1.0 + deform * 0.35;
+        float heightMult = 1.0 - deform * 0.35 * 0.75;
+        halfSize.x *= widthMult;
+        halfSize.y *= heightMult;
+
+        // Use pill shape (rounded rect with cornerRadius = height)
+        float cornerRadius = halfSize.y;
+        float sdf = sdRoundedRect(pos, halfSize, cornerRadius);
+
+        // Soft fill with per-tab alpha
         float fill = smoothstep(GlassEffects::unselectedFillOuter, GlassEffects::unselectedFillInner, sdf);
-        // Gray tint for unselected tabs
-        color = mix(color, color + GlassEffects::unselectedTint, fill * tabs.fillOpacity);
+        color = mix(color, color + GlassEffects::unselectedTint, fill * tabs.fillOpacity * alpha);
     }
     return color;
 }

@@ -18,6 +18,8 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         static let blobVerticalPadding: CGFloat = 4
         static let blobWidthMultiplier: CGFloat = 0.95      // Base width as % of tab width
         static let expandedThreshold: CGFloat = 1.01        // Scale > this = expanded
+        static let metalThreshold: CGFloat = 1.05           // Metal shows at this scale
+        static let grayBlobThreshold: CGFloat = 1.08        // Gray hides at this scale (overlap with Metal)
     }
 
     // MARK: - Public Properties
@@ -76,6 +78,24 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
     // MARK: - Squash & Stretch
 
     private let squashStretchAnimator = SquashStretchAnimator()
+
+    // MARK: - Fill Animation (Crossfade)
+
+    private var tabFillViews: [UIView] = []          // UIKit fill views for each tab
+
+    // Selected fill animators (for crossfade)
+    private let selectedFillScaleAnimator = ScaleAnimator()   // Scale: 1.0 at rest
+    private let selectedFillAlphaAnimator = ScaleAnimator()   // Alpha: 1.0 at rest
+    private let selectedFillDeformAnimator = ScaleAnimator()  // Deformation: 0 at rest
+
+    // Deformation tracking (captured during drag for handoff)
+    private var lastCapturedDeform: CGFloat = 0
+
+    // Collapse animation guard (prevent double trigger)
+    private var isCollapseAnimating: Bool = false
+
+    // Track valid backdrop capture (prevent flash from invalid texture)
+    private var hasValidBackdrop: Bool = false
 
     // MARK: - Double Tap Detection
 
@@ -283,23 +303,54 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
     // MARK: - Long Press (Touch Down Detection)
 
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
-        let location = gesture.location(in: self)
-
         switch gesture.state {
         case .began:
-            // Scale up with animation for seamless expand/collapse
             isTouching = true
-            blobScaleAnimator.setScale(configuration.sdfDragScale, animated: true)
-            // animationTick handles frame updates
+            // Start crossfade: fill shrinks+fades, blob expands+appears
+            startExpandAnimation()
 
         case .ended, .cancelled:
             isTouching = false
-            // Selection is handled by handleTap - don't duplicate here
-            // animationTick will shrink when blob settles
+            // DON'T call startCollapseAnimation() here - animationTick() handles it when blob settles
 
         default:
             break
         }
+    }
+
+    /// Start expand animation: fill shrinks+fades, blob expands
+    private func startExpandAnimation() {
+        // Reset collapse flag so collapse can trigger later
+        isCollapseAnimating = false
+
+        // 1. INSTANTLY hide fill (no animation - prevents flash)
+        selectedFillAlphaAnimator.setScale(0, animated: false)
+        selectedFillScaleAnimator.target = 0.9
+
+        // 2. Blob expand (visibility controlled by isHidden based on scale threshold)
+        blobScaleAnimator.target = configuration.sdfDragScale
+    }
+
+    /// Start collapse animation: blob shrinks, fill appears with inherited deformation
+    private func startCollapseAnimation() {
+        // Prevent double trigger
+        guard !isCollapseAnimating else { return }
+        isCollapseAnimating = true
+
+        // Capture deformation for handoff
+        let currentDeform = lastCapturedDeform
+
+        // 1. Blob shrink (visibility controlled by isHidden based on scale threshold)
+        blobScaleAnimator.target = 1.0           // Shrink to base size
+
+        // 2. Fill appears INSTANTLY (not animated) - prevents flash
+        selectedFillScaleAnimator.setScale(1.0, animated: false)  // Instant scale
+        selectedFillAlphaAnimator.setScale(1.0, animated: false)  // Instant alpha
+        selectedFillDeformAnimator.setScale(currentDeform, animated: false)
+        selectedFillDeformAnimator.target = 0    // Only deform animates to stabilize
+
+        // Reset captured deform
+        lastCapturedDeform = 0
     }
 
     // MARK: - Layout
@@ -338,6 +389,7 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
         layoutTabButtons()
         layoutBlobView()
+        updateFillViewFrames()  // Update UIKit fill views
         updateUniformsGeometry()
 
         // Capture initial texture if we don't have one yet
@@ -395,7 +447,6 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         let baseWidth = tabWidth * Constants.blobWidthMultiplier
 
         // Blob size - uniform scale for both width and height
-        let isExpanded = blobScale > Constants.expandedThreshold
         let width = baseWidth * blobScale
         let height = baseHeight * blobScale
 
@@ -408,10 +459,20 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
             height: height
         )
 
-        // Toggle between glass effect (expanded) and flat gray (collapsed)
-        blobBackgroundView.isHidden = isExpanded
-        metalContainerView?.isHidden = !isExpanded
-        metalView?.isPaused = !isExpanded
+        // Staggered visibility: gray leads on expand, Metal follows
+        // This creates OVERLAP between grayBlobThreshold and metalThreshold to prevent flash
+        let isExpanded = blobScale > Constants.expandedThreshold
+
+        // Gray blob visible when scale < grayBlobThreshold (hides later during expand)
+        let showGrayBlob = blobScale < Constants.grayBlobThreshold
+        blobBackgroundView.isHidden = !showGrayBlob
+        blobBackgroundView.alpha = showGrayBlob ? 1.0 : 0.0
+
+        // Metal view shows when scale > metalThreshold AND we have valid backdrop
+        // This creates overlap: both visible between metalThreshold(1.05) and grayBlobThreshold(1.08)
+        let shouldShowMetal = blobScale > Constants.metalThreshold && hasValidBackdrop
+        metalContainerView?.isHidden = !shouldShowMetal
+        metalView?.isPaused = !shouldShowMetal
         maskedContentView?.isHidden = false  // Always visible - mask handles clipping
 
         // Update both blob views
@@ -426,8 +487,6 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
             let captureArea = captureRect
             metalContainerView?.frame = captureArea
             metalView?.frame = metalContainerView?.bounds ?? captureArea
-
-            // Update uniforms with blob position within capture area
             updateUniformsGeometry(blobFrame: frame)
         }
     }
@@ -440,6 +499,18 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         tabButtons.removeAll()
         maskedTabButtons.forEach { $0.removeFromSuperview() }
         maskedTabButtons.removeAll()
+        tabFillViews.forEach { $0.removeFromSuperview() }
+        tabFillViews.removeAll()
+
+        // Create UIKit fill views for each tab (below icons)
+        for _ in 0..<items.count {
+            let fillView = UIView()
+            fillView.backgroundColor = UIColor.gray.withAlphaComponent(0.3)
+            fillView.layer.cornerCurve = .continuous
+            fillView.isUserInteractionEnabled = false
+            insertSubview(fillView, at: 0)  // At bottom
+            tabFillViews.append(fillView)
+        }
 
         // Create unselected buttons (bottom layer)
         for (index, item) in items.enumerated() {
@@ -454,6 +525,20 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
             maskedContentView.addSubview(button)
             maskedTabButtons.append(button)
         }
+
+        // Initialize animators for crossfade
+        // Selected fill starts visible (alpha=1, scale=1, deform=0)
+        selectedFillScaleAnimator.stiffness = 400
+        selectedFillScaleAnimator.damping = 25
+        selectedFillScaleAnimator.setScale(1.0, animated: false)
+
+        selectedFillAlphaAnimator.stiffness = 400
+        selectedFillAlphaAnimator.damping = 25
+        selectedFillAlphaAnimator.setScale(1.0, animated: false)
+
+        selectedFillDeformAnimator.stiffness = 300
+        selectedFillDeformAnimator.damping = 20
+        selectedFillDeformAnimator.setScale(0.0, animated: false)
 
         // Initialize blob position
         if !items.isEmpty {
@@ -517,21 +602,23 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         switch gesture.state {
         case .began:
             isDragging = true
-            // Animate to finger position (spring follow)
+            // Start crossfade: expand blob
+            startExpandAnimation()
             blobAnimator.target = clampedPosition
-            blobScaleAnimator.setScale(configuration.sdfDragScale, animated: true)
-            // animationTick handles frame updates
 
         case .changed:
             // Spring follow finger position
             blobAnimator.target = clampedPosition
-            // animationTick handles frame updates
 
         case .ended, .cancelled:
             isDragging = false
-            // Snap to nearest tab (stays expanded during animation, shrinks when settled)
+            // Snap to nearest tab
             let nearestIndex = indexOfNearestTab(to: location)
-            selectTab(at: nearestIndex, animated: true)
+            selectedIndex = nearestIndex
+            let center = centerForTab(at: nearestIndex)
+            blobAnimator.target = center
+            // Collapse will be triggered by animationTick when settled
+            delegate?.tabBar(self, didSelectItemAt: nearestIndex)
 
         default:
             break
@@ -562,45 +649,98 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
         selectedIndex = index
 
-        // Scale up during animation
-        if animated {
-            blobScaleAnimator.setScale(configuration.sdfDragScale, animated: true)
-        }
-
         // Animate blob to selected tab
         let center = centerForTab(at: index)
         blobAnimator.target = center
-        if !animated {
+
+        if animated {
+            // Start crossfade: expand blob
+            startExpandAnimation()
+        } else {
+            // Instant: position blob, show fill
             blobAnimator.setPosition(center, animated: false)
+            blobScaleAnimator.setScale(1.0, animated: false)
+            selectedFillAlphaAnimator.setScale(1.0, animated: false)  // Fill visible
+            selectedFillScaleAnimator.setScale(1.0, animated: false)
+            selectedFillDeformAnimator.setScale(0.0, animated: false)
         }
 
+        updateFillViewFrames()
         delegate?.tabBar(self, didSelectItemAt: index)
     }
 
     // MARK: - Animation
 
     @objc private func animationTick() {
-        // Update squash/stretch animator (spring physics)
+        // Step all animators
+        blobAnimator.step()
+        blobScaleAnimator.step()
         squashStretchAnimator.update(deltaTime: 1.0 / 120.0)
 
-        let needsUpdate = !blobAnimator.isSettled || !blobScaleAnimator.isSettled || isDragging || squashStretchAnimator.isActive
+        selectedFillScaleAnimator.step()
+        selectedFillAlphaAnimator.step()
+        selectedFillDeformAnimator.step()
 
-        // Only step and update when animation is active
-        if needsUpdate {
-            blobAnimator.step()
-            blobScaleAnimator.step()
-            updateBlobFrame()
+        // Capture deformation while dragging/touching (for later handoff)
+        if isDragging || isTouching {
+            lastCapturedDeform = CGFloat(squashStretchAnimator.normalizedVelocity.x)
         }
 
-        // Shrink when blob stops moving AND not touching/dragging
-        if !isDragging && !isTouching && blobAnimator.isSettled && blobScaleAnimator.current > Constants.expandedThreshold {
-            blobScaleAnimator.setScale(1.0, animated: true)
-        }
-
-        // Only capture backdrop when expanded (glass effect active)
-        let isExpanded = blobScaleAnimator.current > Constants.expandedThreshold
-        if isExpanded {
+        // CAPTURE BACKDROP FIRST (before Metal shows) - prevents white flash
+        let willBeExpanded = blobScaleAnimator.current > Constants.expandedThreshold
+        if willBeExpanded {
             captureBackdropSnapshot()
+        }
+
+        // NOW update blob frame (which may show Metal with valid texture)
+        updateBlobFrame()
+
+        // Update fill view frames
+        updateFillViewFrames()
+
+        // Detect when blob settles and start collapse (if not touching/dragging)
+        let blobSettled = blobAnimator.isSettled && blobScaleAnimator.isSettled
+        let shouldCollapse = blobSettled && !isTouching && !isDragging && willBeExpanded
+        if shouldCollapse {
+            startCollapseAnimation()
+        }
+    }
+
+    /// Updates UIKit fill view frames with scale, alpha, and deformation
+    private func updateFillViewFrames() {
+        guard !tabButtons.isEmpty else { return }
+
+        let tabWidth = tabButtons.first?.frame.width ?? 80
+        let baseHeight = bounds.height - Constants.blobVerticalPadding
+        let baseWidth = tabWidth * Constants.blobWidthMultiplier
+
+        for (i, fillView) in tabFillViews.enumerated() {
+            guard i < tabButtons.count else { continue }
+            let center = tabButtons[i].center
+
+            if i == selectedIndex {
+                // Selected fill: animated scale, alpha, deformation
+                let scale = selectedFillScaleAnimator.current
+                let alpha = selectedFillAlphaAnimator.current
+                let deform = selectedFillDeformAnimator.current
+
+                let widthMult = 1.0 + deform * 0.35
+                let heightMult = 1.0 - deform * 0.35 * 0.75
+                let width = baseWidth * scale * widthMult
+                let height = baseHeight * scale * heightMult
+
+                fillView.frame = CGRect(
+                    x: center.x - width / 2,
+                    y: center.y - height / 2,
+                    width: width,
+                    height: height
+                )
+                fillView.layer.cornerRadius = height / 2
+                fillView.alpha = alpha
+            } else {
+                // Unselected fills: HIDDEN (only selected tab has fill)
+                fillView.alpha = 0
+            }
         }
     }
 
@@ -621,7 +761,6 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         // Zero out SDF uniforms (blob is UIKit, not shader)
         renderer.sdf1Uniforms = SdfUniforms()
         renderer.sdf2Uniforms = SdfUniforms()
-        renderer.tabUniforms = TabUniforms()
     }
 
     private func updateUniformsGeometry(blobFrame: CGRect? = nil) {
@@ -750,10 +889,13 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         superview.layer.render(in: context)
         context.restoreGState()
 
-        // Restore visibility based on expanded state
-        let isExpanded = blobScaleAnimator.current > Constants.expandedThreshold
-        metalContainerView?.isHidden = !isExpanded
-        blobBackgroundView?.isHidden = isExpanded
+        // Restore visibility using staggered thresholds (consistent with updateBlobFrame)
+        let blobScale = blobScaleAnimator.current
+        let shouldShowMetal = blobScale > Constants.metalThreshold && hasValidBackdrop
+        metalContainerView?.isHidden = !shouldShowMetal
+        // Gray blob visibility controlled by staggered threshold
+        let showGrayBlob = blobScale < Constants.grayBlobThreshold
+        blobBackgroundView?.isHidden = !showGrayBlob
         maskedContentView?.isHidden = false
 
         // Unlock IOSurface
@@ -761,5 +903,16 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
         // Texture is already backed by the same IOSurface - zero copy!
         renderer?.backdropTexture = pool.getTexture()
+
+        // Mark that we have a valid backdrop (prevents flash on first show)
+        hasValidBackdrop = true
+    }
+}
+
+// MARK: - Comparable Extension
+
+private extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        return min(max(self, range.lowerBound), range.upperBound)
     }
 }
