@@ -294,15 +294,8 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
         case .ended, .cancelled:
             isTouching = false
-            // If not dragging, snap to nearest tab and shrink immediately
-            if !isDragging {
-                let nearestIndex = indexOfNearestTab(to: location)
-                // Select without re-expanding, then shrink immediately
-                selectedIndex = nearestIndex
-                blobAnimator.target = centerForTab(at: nearestIndex)
-                delegate?.tabBar(self, didSelectItemAt: nearestIndex)
-                blobScaleAnimator.setScale(1.0, animated: true)
-            }
+            // Selection is handled by handleTap - don't duplicate here
+            // animationTick will shrink when blob settles
 
         default:
             break
@@ -378,8 +371,8 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
             }
         }
 
-        // Initialize blob position if needed (but not during drag)
-        if !isDragging && blobAnimator.isSettled && !items.isEmpty {
+        // Initialize blob position only on first layout (when position is unset)
+        if blobAnimator.current == .zero && !items.isEmpty {
             let center = centerForTab(at: selectedIndex)
             blobAnimator.setPosition(center, animated: false)
         }
@@ -741,10 +734,10 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         // Get capture rect in superview's coordinate space
         let captureRectInSuperview = convert(captureArea, to: superview)
 
-        // Hide Metal and blob views (keep tab content visible for refraction)
+        // Hide Metal and blob background (keep masked icons visible for refraction)
         metalContainerView?.isHidden = true
         blobBackgroundView?.isHidden = true
-        maskedContentView?.isHidden = true
+        // Keep maskedContentView visible so selected icons get refracted through glass
 
         // Save state, apply transforms, render at capture area position
         context.saveGState()
