@@ -290,7 +290,7 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
             // Scale up with animation for seamless expand/collapse
             isTouching = true
             blobScaleAnimator.setScale(configuration.sdfDragScale, animated: true)
-            updateBlobFrame()
+            // animationTick handles frame updates
 
         case .ended, .cancelled:
             isTouching = false
@@ -513,15 +513,15 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         switch gesture.state {
         case .began:
             isDragging = true
-            // Move blob to finger (X clamped), scale up
-            blobAnimator.setPosition(clampedPosition, animated: false)
+            // Animate to finger position (spring follow)
+            blobAnimator.target = clampedPosition
             blobScaleAnimator.setScale(configuration.sdfDragScale, animated: true)
-            updateBlobFrame()
+            // animationTick handles frame updates
 
         case .changed:
-            // Follow finger (X clamped)
-            blobAnimator.setPosition(clampedPosition, animated: false)
-            updateBlobFrame()
+            // Spring follow finger position
+            blobAnimator.target = clampedPosition
+            // animationTick handles frame updates
 
         case .ended, .cancelled:
             isDragging = false
