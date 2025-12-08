@@ -287,9 +287,9 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
         switch gesture.state {
         case .began:
-            // Scale up INSTANTLY on touch (no animation delay)
+            // Scale up with animation for seamless expand/collapse
             isTouching = true
-            blobScaleAnimator.setScale(configuration.sdfDragScale, animated: false)
+            blobScaleAnimator.setScale(configuration.sdfDragScale, animated: true)
             updateBlobFrame()
 
         case .ended, .cancelled:
