@@ -132,6 +132,12 @@ final class SpringAnimator {
         lastTime = 0
     }
 
+    /// Reset timing without affecting position/velocity
+    /// Call this when layout changes to prevent stale delta time calculations
+    func resetTiming() {
+        lastTime = 0
+    }
+
     /// Configure from LiquidGlassConfiguration
     func configure(with config: LiquidGlassConfiguration) {
         self.mass = config.springMass
@@ -248,6 +254,11 @@ final class ScaleAnimator {
         current = 1.0
         target = 1.0
         velocity = 0
+        lastTime = 0
+    }
+
+    /// Reset timing without affecting scale/velocity
+    func resetTiming() {
         lastTime = 0
     }
 }

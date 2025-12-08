@@ -376,6 +376,10 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
             let center = centerForTab(at: selectedIndex)
             blobAnimator.setPosition(center, animated: false)
         }
+
+        // Reset animator timing to prevent stale delta time after layout changes
+        blobAnimator.resetTiming()
+        blobScaleAnimator.resetTiming()
     }
 
     private func layoutBlobView() {

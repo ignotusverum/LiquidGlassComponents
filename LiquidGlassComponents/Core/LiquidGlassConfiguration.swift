@@ -166,10 +166,10 @@ struct LiquidGlassConfiguration {
     var springMass: CGFloat = 1.0
 
     /// Spring stiffness (higher = snappier)
-    var springStiffness: CGFloat = 300.0
+    var springStiffness: CGFloat = 500.0
 
     /// Spring damping (higher = less oscillation)
-    var springDamping: CGFloat = 20.0
+    var springDamping: CGFloat = 28.0
 
     // MARK: - Performance
 

@@ -3,6 +3,7 @@ import UIKit
 class ViewController: UIViewController, LiquidGlassTabBarDelegate, UIScrollViewDelegate {
 
     private var tabBar: LiquidGlassTabBar!
+    private var inputBar: LiquidGlassInputBar!
     private var scrollView: UIScrollView!
     private var contentView: UIView!
 
@@ -11,6 +12,7 @@ class ViewController: UIViewController, LiquidGlassTabBarDelegate, UIScrollViewD
 
         setupScrollableBackground()
         setupTabBar()
+        setupInputBar()
     }
 
     private func setupScrollableBackground() {
@@ -119,8 +121,10 @@ class ViewController: UIViewController, LiquidGlassTabBarDelegate, UIScrollViewD
             )
         ]
 
-        // Configure appearance
-        tabBar.configuration = .default
+        // Configure appearance - darker tint for more prominence
+        var config = LiquidGlassConfiguration.default
+        config.tintOpacity = 0.3
+        tabBar.configuration = config
 
         // Add tab bar ON TOP of scroll view (not inside it)
         view.addSubview(tabBar)
@@ -135,7 +139,27 @@ class ViewController: UIViewController, LiquidGlassTabBarDelegate, UIScrollViewD
         ])
 
         // Add bottom content inset so scroll content isn't hidden behind tab bar
-        scrollView.contentInset.bottom = tabBarHeight + 20
+        scrollView.contentInset.bottom = tabBarHeight + 80  // Extra space for input bar
+    }
+
+    private func setupInputBar() {
+        let inputBarHeight: CGFloat = 50
+
+        inputBar = LiquidGlassInputBar()
+        // Use same darker config as tab bar
+        var inputConfig = LiquidGlassConfiguration.default
+        inputConfig.tintOpacity = 0.3
+        inputBar.configuration = inputConfig
+
+        view.addSubview(inputBar)
+
+        inputBar.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            inputBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            inputBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            inputBar.bottomAnchor.constraint(equalTo: tabBar.topAnchor, constant: -12),
+            inputBar.heightAnchor.constraint(equalToConstant: inputBarHeight)
+        ])
     }
 
     // MARK: - LiquidGlassTabBarDelegate

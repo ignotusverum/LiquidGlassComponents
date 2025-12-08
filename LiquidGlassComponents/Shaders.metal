@@ -54,12 +54,12 @@ namespace GlassEffects {
 
     // Edge Effects
     constant float fresnelExponent = 2.5;
-    constant float fresnelIntensity = 0.15;
+    constant float fresnelIntensity = 0.11;
     constant float edgeMaskWidth = 6.0;
-    constant float edgeMaskIntensity = 0.15;
+    constant float edgeMaskIntensity = 0.11;
     constant float borderOuter = 2.0;
     constant float borderInner = 1.0;
-    constant float borderIntensity = 0.5;
+    constant float borderIntensity = 0.38;
 
     // SDF Fill
     constant float fillTransitionOuter = 10.0;
