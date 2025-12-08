@@ -4,6 +4,8 @@ class ViewController: UIViewController, LiquidGlassTabBarDelegate, UIScrollViewD
 
     private var tabBar: LiquidGlassTabBar!
     private var inputBar: LiquidGlassInputBar!
+    private var switcher: LiquidGlassSwitcher!
+    private var slider: LiquidGlassSlider!
     private var scrollView: UIScrollView!
     private var contentView: UIView!
 
@@ -12,7 +14,7 @@ class ViewController: UIViewController, LiquidGlassTabBarDelegate, UIScrollViewD
 
         setupScrollableBackground()
         setupTabBar()
-        setupInputBar()
+        setupSectionComponents()
     }
 
     private func setupScrollableBackground() {
@@ -139,27 +141,62 @@ class ViewController: UIViewController, LiquidGlassTabBarDelegate, UIScrollViewD
         ])
 
         // Add bottom content inset so scroll content isn't hidden behind tab bar
-        scrollView.contentInset.bottom = tabBarHeight + 80  // Extra space for input bar
+        scrollView.contentInset.bottom = tabBarHeight + 20
     }
 
-    private func setupInputBar() {
-        let inputBarHeight: CGFloat = 50
+    private func setupSectionComponents() {
+        let screenWidth = UIScreen.main.bounds.width
+        let horizontalPadding: CGFloat = 16
 
+        // Section 1: Input Bar (y = 150)
         inputBar = LiquidGlassInputBar()
-        // Use same darker config as tab bar
         var inputConfig = LiquidGlassConfiguration.default
         inputConfig.tintOpacity = 0.3
         inputBar.configuration = inputConfig
+        inputBar.frame = CGRect(
+            x: horizontalPadding,
+            y: 150,
+            width: screenWidth - horizontalPadding * 2,
+            height: 50
+        )
+        contentView.addSubview(inputBar)
 
-        view.addSubview(inputBar)
+        // Section 2: Switcher (y = 350)
+        switcher = LiquidGlassSwitcher()
+        var switcherConfig = LiquidGlassConfiguration.default
+        switcherConfig.tintOpacity = 0.3
+        switcher.configuration = switcherConfig
+        switcher.frame = CGRect(
+            x: horizontalPadding,
+            y: 350,
+            width: 56,
+            height: 34
+        )
+        switcher.addTarget(self, action: #selector(switcherValueChanged), for: .valueChanged)
+        contentView.addSubview(switcher)
 
-        inputBar.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            inputBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            inputBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            inputBar.bottomAnchor.constraint(equalTo: tabBar.topAnchor, constant: -12),
-            inputBar.heightAnchor.constraint(equalToConstant: inputBarHeight)
-        ])
+        // Section 3: Slider (y = 550)
+        slider = LiquidGlassSlider()
+        var sliderConfig = LiquidGlassConfiguration.default
+        sliderConfig.tintOpacity = 0.3
+        slider.configuration = sliderConfig
+        slider.frame = CGRect(
+            x: horizontalPadding,
+            y: 550,
+            width: screenWidth - horizontalPadding * 2,
+            height: 44
+        )
+        slider.minimumTrackTintColor = .systemBlue
+        slider.addTarget(self, action: #selector(sliderValueChanged), for: .valueChanged)
+        contentView.addSubview(slider)
+    }
+
+    @objc private func switcherValueChanged() {
+        print("Switcher is now: \(switcher.isOn ? "ON" : "OFF")")
+    }
+
+    @objc private func sliderValueChanged() {
+        print("Slider value: \(String(format: "%.2f", slider.value))")
     }
 
     // MARK: - LiquidGlassTabBarDelegate
