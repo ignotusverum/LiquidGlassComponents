@@ -97,6 +97,9 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
     // Track valid backdrop capture (prevent flash from invalid texture)
     private var hasValidBackdrop: Bool = false
 
+    // Pending collapse work item (to cancel on new gesture)
+    private var pendingCollapseWork: DispatchWorkItem?
+
     // MARK: - Double Tap Detection
 
     private var lastTapTime: TimeInterval = 0
@@ -303,15 +306,20 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
     // MARK: - Long Press (Touch Down Detection)
 
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+        let location = gesture.location(in: self)
+        let clampedPosition = CGPoint(x: clampedX(location.x), y: bounds.midY)
+
         switch gesture.state {
         case .began:
             isTouching = true
-            // Start crossfade: fill shrinks+fades, blob expands+appears
+            // Move blob to touch point and expand
+            blobAnimator.target = clampedPosition
             startExpandAnimation()
 
         case .ended, .cancelled:
             isTouching = false
-            // DON'T call startCollapseAnimation() here - animationTick() handles it when blob settles
+            // Delay before collapse (cancellable if new gesture starts)
+            scheduleCollapse(delay: 0.2)
 
         default:
             break
@@ -320,6 +328,10 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
     /// Start expand animation: fill shrinks+fades, blob expands
     private func startExpandAnimation() {
+        // Cancel any pending collapse from previous gesture
+        pendingCollapseWork?.cancel()
+        pendingCollapseWork = nil
+
         // Reset collapse flag so collapse can trigger later
         isCollapseAnimating = false
 
@@ -329,6 +341,16 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
         // 2. Blob expand (visibility controlled by isHidden based on scale threshold)
         blobScaleAnimator.target = configuration.sdfDragScale
+    }
+
+    /// Schedule collapse after delay (cancellable)
+    private func scheduleCollapse(delay: TimeInterval) {
+        pendingCollapseWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.startCollapseAnimation()
+        }
+        pendingCollapseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     /// Start collapse animation: blob shrinks, fill appears with inherited deformation
@@ -586,7 +608,16 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
 
         lastTapTime = now
         lastTappedIndex = index
-        selectTab(at: index, animated: true)
+
+        // Move blob to tab center (not tap location), expand, then collapse
+        let tabCenter = centerForTab(at: index)
+        blobAnimator.target = tabCenter
+        startExpandAnimation()
+        // Same delay as long press (cancellable if new gesture starts)
+        scheduleCollapse(delay: 0.2)
+
+        selectedIndex = index
+        delegate?.tabBar(self, didSelectItemAt: index)
     }
 
     // MARK: - Pan Gesture (Drag to Switch Tabs)
@@ -724,6 +755,11 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
                 let alpha = selectedFillAlphaAnimator.current
                 let deform = selectedFillDeformAnimator.current
 
+                // Hide fill when blob is visible (prevents two shapes showing)
+                let blobScale = blobScaleAnimator.current
+                let blobVisible = blobScale >= Constants.expandedThreshold
+                let effectiveAlpha = blobVisible ? 0.0 : alpha
+
                 let widthMult = 1.0 + deform * 0.35
                 let heightMult = 1.0 - deform * 0.35 * 0.75
                 let width = baseWidth * scale * widthMult
@@ -736,7 +772,7 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
                     height: height
                 )
                 fillView.layer.cornerRadius = height / 2
-                fillView.alpha = alpha
+                fillView.alpha = effectiveAlpha
             } else {
                 // Unselected fills: HIDDEN (only selected tab has fill)
                 fillView.alpha = 0

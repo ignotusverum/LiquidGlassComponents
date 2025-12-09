@@ -1,4 +1,5 @@
 import UIKit
+import MetalKit
 
 // MARK: - LiquidGlassSlider
 
@@ -8,8 +9,12 @@ final class LiquidGlassSlider: UIControl {
 
     private enum Constants {
         static let trackHeight: CGFloat = 8
-        static let thumbSize: CGFloat = 28
-        static let expandedTrackHeight: CGFloat = 12
+        static let thumbWidth: CGFloat = 38       // Pill shape - horizontal
+        static let thumbHeight: CGFloat = 24      // Pill shape - shorter
+        static let expandedScale: CGFloat = 1.5   // Scale when dragging (50% bigger)
+        static let expandedThreshold: CGFloat = 1.01   // Scale > this = expanded
+        static let metalThreshold: CGFloat = 1.03      // Metal shows at this scale
+        static let grayThreshold: CGFloat = 1.08       // Gray hides at this scale
     }
 
     // MARK: - Configuration
@@ -40,14 +45,22 @@ final class LiquidGlassSlider: UIControl {
     private var trackBackdropLayer: CALayer?
     private var trackTintLayer: CALayer!
     private var fillLayer: CALayer!
-    private var thumb: UIView!
-    private var thumbBackdropLayer: CALayer?
-    private var thumbTintLayer: CALayer!
+
+    // Gray blob (visible when collapsed)
+    private var thumbBackground: UIView!
+
+    // Metal glass effect (visible when expanded)
+    private var metalContainerView: UIView!
+    private var metalView: MTKView!
+    private var renderer: LiquidGlassRenderer?
+    private var texturePool: IOSurfaceTexturePool?
+    private var hasValidBackdrop: Bool = false
 
     // MARK: - Animation
 
     private var thumbAnimator: SpringAnimator?
-    private var scaleAnimator: ScaleAnimator?
+    private var thumbScaleAnimator = ScaleAnimator()
+    private let squashStretchAnimator = SquashStretchAnimator()
     private var displayLink: CADisplayLink?
     private var isDragging = false
 
@@ -71,8 +84,10 @@ final class LiquidGlassSlider: UIControl {
 
     private func setup() {
         backgroundColor = .clear
+        clipsToBounds = false  // Allow blob to overflow bounds
         setupTrack()
-        setupThumb()
+        setupThumbBackground()
+        setupMetalView()
         setupGestures()
         setupDisplayLink()
     }
@@ -95,22 +110,59 @@ final class LiquidGlassSlider: UIControl {
         trackContainer.layer.addSublayer(fillLayer)
     }
 
-    private func setupThumb() {
-        thumb = UIView()
-        thumb.backgroundColor = .clear
-        thumb.layer.cornerCurve = .continuous
-        thumb.isUserInteractionEnabled = false
-        addSubview(thumb)
+    private func setupThumbBackground() {
+        // White blob background (visible when collapsed)
+        thumbBackground = UIView()
+        thumbBackground.backgroundColor = UIColor.white
+        thumbBackground.layer.cornerCurve = .continuous
+        thumbBackground.isUserInteractionEnabled = false
 
-        thumbTintLayer = CALayer()
-        thumbTintLayer.backgroundColor = UIColor.white.withAlphaComponent(0.95).cgColor
-        thumb.layer.addSublayer(thumbTintLayer)
+        // Drop shadow
+        thumbBackground.layer.shadowColor = UIColor.black.cgColor
+        thumbBackground.layer.shadowOffset = CGSize(width: 0, height: 2)
+        thumbBackground.layer.shadowRadius = 4
+        thumbBackground.layer.shadowOpacity = 0.15
 
-        // Add shadow
-        thumb.layer.shadowColor = UIColor.black.cgColor
-        thumb.layer.shadowOffset = CGSize(width: 0, height: 2)
-        thumb.layer.shadowRadius = 4
-        thumb.layer.shadowOpacity = 0.2
+        addSubview(thumbBackground)
+    }
+
+    private func setupMetalView() {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            print("Metal not available")
+            return
+        }
+
+        // Container for Metal view
+        metalContainerView = UIView()
+        metalContainerView.clipsToBounds = false
+        metalContainerView.backgroundColor = .clear
+        metalContainerView.isUserInteractionEnabled = false
+        metalContainerView.isHidden = true  // Hidden until expanded
+        addSubview(metalContainerView)
+
+        // Metal view
+        metalView = MTKView(frame: .zero, device: device)
+        metalView.isOpaque = false
+        metalView.backgroundColor = .clear
+        metalView.framebufferOnly = false
+        metalView.preferredFramesPerSecond = configuration.preferredFPS
+        metalView.isPaused = true  // Paused until expanded
+        metalView.enableSetNeedsDisplay = false
+        metalView.clipsToBounds = false
+        metalView.isUserInteractionEnabled = false
+
+        renderer = LiquidGlassRenderer(device: device)
+        metalView.delegate = renderer
+
+        // Create IOSurface texture pool for GPU-accelerated capture
+        texturePool = IOSurfaceTexturePool(device: device)
+
+        // Update uniforms callback
+        renderer?.onUpdate = { [weak self] in
+            self?.updateUniforms()
+        }
+
+        metalContainerView.addSubview(metalView)
     }
 
     private func setupGestures() {
@@ -122,13 +174,17 @@ final class LiquidGlassSlider: UIControl {
     }
 
     private func setupDisplayLink() {
-        thumbAnimator = SpringAnimator(mass: 1.0, stiffness: 500, damping: 28)
+        // Lower damping (18) for bouncier spring animation
+        thumbAnimator = SpringAnimator(mass: 1.0, stiffness: 400, damping: 18)
         thumbAnimator?.setPosition(CGPoint(x: thumbXPosition(), y: 0), animated: false)
 
-        scaleAnimator = ScaleAnimator()
-        scaleAnimator?.stiffness = 400
-        scaleAnimator?.damping = 25
-        scaleAnimator?.setScale(1.0, animated: false)
+        // Configure scale animator with lower damping for bounce
+        thumbScaleAnimator.stiffness = 400
+        thumbScaleAnimator.damping = 18
+        thumbScaleAnimator.setScale(1.0, animated: false)
+
+        // Configure squash/stretch with subtle limits for slider
+        squashStretchAnimator.limits = .subtle
 
         displayLink = CADisplayLink(target: self, selector: #selector(displayLinkFired))
         displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
@@ -136,24 +192,16 @@ final class LiquidGlassSlider: UIControl {
     }
 
     private func setupBackdropLayers() {
-        // Track backdrop
+        // Track backdrop only (thumb uses Metal rendering)
         trackBackdropLayer?.removeFromSuperlayer()
-        trackBackdropLayer = createBackdropLayer(for: trackContainer, isTrack: true)
-
-        // Thumb backdrop
-        thumbBackdropLayer?.removeFromSuperlayer()
-        thumbBackdropLayer = createBackdropLayer(for: thumb, isTrack: false)
+        trackBackdropLayer = createBackdropLayer(for: trackContainer)
     }
 
-    private func createBackdropLayer(for container: UIView, isTrack: Bool) -> CALayer? {
+    private func createBackdropLayer(for container: UIView) -> CALayer? {
         guard BackdropLayerWrapper.isAvailable() else {
             let fallback = CALayer()
             fallback.frame = container.bounds
-            if isTrack {
-                fallback.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.4).cgColor
-            } else {
-                fallback.backgroundColor = UIColor.white.withAlphaComponent(0.95).cgColor
-            }
+            fallback.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.4).cgColor
             fallback.cornerRadius = container.bounds.height / 2
             fallback.masksToBounds = true
             container.layer.insertSublayer(fallback, at: 0)
@@ -162,7 +210,7 @@ final class LiquidGlassSlider: UIControl {
 
         let backdrop = BackdropLayerWrapper.createBackdropLayer(
             withFrame: container.bounds,
-            blurIntensity: isTrack ? configuration.blurIntensity * 0.7 : configuration.blurIntensity * 0.5,
+            blurIntensity: configuration.blurIntensity * 0.7,
             saturation: configuration.saturationBoost,
             scale: configuration.blurScale
         )
@@ -177,17 +225,17 @@ final class LiquidGlassSlider: UIControl {
     // MARK: - Layout
 
     override var intrinsicContentSize: CGSize {
-        return CGSize(width: 200, height: Constants.thumbSize)
+        return CGSize(width: 200, height: Constants.thumbHeight)
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
 
         let trackY = (bounds.height - Constants.trackHeight) / 2
-        let trackWidth = bounds.width - Constants.thumbSize
+        let trackWidth = bounds.width - Constants.thumbWidth
 
         trackContainer.frame = CGRect(
-            x: Constants.thumbSize / 2,
+            x: Constants.thumbWidth / 2,
             y: trackY,
             width: trackWidth,
             height: Constants.trackHeight
@@ -203,35 +251,11 @@ final class LiquidGlassSlider: UIControl {
     }
 
     private func updateTrackFill() {
-        let fillWidth = trackContainer.bounds.width * value
-        fillLayer.frame = CGRect(
-            x: 0,
-            y: 0,
-            width: fillWidth,
-            height: trackContainer.bounds.height
-        )
-        fillLayer.cornerRadius = Constants.trackHeight / 2
-        fillLayer.backgroundColor = minimumTrackTintColor.withAlphaComponent(0.7).cgColor
-    }
-
-    private func updateThumbFrame() {
-        let scale = scaleAnimator?.current ?? 1.0
+        // Fill extends from track start to thumb CENTER (50% of blob)
         let thumbX = thumbAnimator?.current.x ?? thumbXPosition()
-        let scaledSize = Constants.thumbSize * scale
+        let trackStartX = Constants.thumbWidth / 2
+        let fillWidth = thumbX - trackStartX
 
-        thumb.frame = CGRect(
-            x: thumbX - scaledSize / 2,
-            y: (bounds.height - scaledSize) / 2,
-            width: scaledSize,
-            height: scaledSize
-        )
-        thumb.layer.cornerRadius = scaledSize / 2
-
-        thumbTintLayer.frame = thumb.bounds
-        thumbTintLayer.cornerRadius = scaledSize / 2
-
-        // Update fill to match thumb position
-        let fillWidth = thumbX - Constants.thumbSize / 2
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         fillLayer.frame = CGRect(
@@ -240,12 +264,71 @@ final class LiquidGlassSlider: UIControl {
             width: max(0, fillWidth),
             height: trackContainer.bounds.height
         )
+        fillLayer.cornerRadius = Constants.trackHeight / 2
+        fillLayer.backgroundColor = minimumTrackTintColor.withAlphaComponent(0.7).cgColor
         CATransaction.commit()
     }
 
+    private func updateThumbFrame() {
+        let thumbX = thumbAnimator?.current.x ?? thumbXPosition()
+        let scale = thumbScaleAnimator.current
+
+        // Squash/stretch deformation from velocity
+        let deform = CGFloat(squashStretchAnimator.normalizedVelocity.x)
+        let widthMultiplier = 1.0 + deform * 0.35   // Stretch width when moving
+        let heightMultiplier = 1.0 - deform * 0.35 * 0.75  // Squash height (volume preservation)
+
+        // Apply scale and deformation to pill dimensions
+        let scaledWidth = Constants.thumbWidth * scale * widthMultiplier
+        let scaledHeight = Constants.thumbHeight * scale * heightMultiplier
+
+        // Center vertically
+        let thumbY = (bounds.height - scaledHeight) / 2
+
+        let thumbFrame = CGRect(
+            x: thumbX - scaledWidth / 2,
+            y: thumbY,
+            width: scaledWidth,
+            height: scaledHeight
+        )
+
+        // Staggered visibility: gray leads, Metal follows
+        let showGray = scale < Constants.grayThreshold
+        let showMetal = scale > Constants.metalThreshold && hasValidBackdrop
+
+        // Update gray background
+        thumbBackground.frame = thumbFrame
+        thumbBackground.layer.cornerRadius = min(scaledWidth, scaledHeight) / 2
+        thumbBackground.isHidden = !showGray
+        thumbBackground.alpha = showGray ? 1.0 : 0.0
+
+        // Update Metal view
+        metalContainerView?.isHidden = !showMetal
+        metalView?.isPaused = !showMetal
+
+        if showMetal {
+            // Metal container covers capture area
+            let captureArea = captureRect
+            metalContainerView?.frame = captureArea
+            metalView?.frame = metalContainerView?.bounds ?? captureArea
+            updateUniformsGeometry(thumbFrame: thumbFrame)
+        }
+
+        // Update fill to match thumb center position
+        updateTrackFill()
+    }
+
+    /// Capture area for backdrop (slider + padding for scaled blob overflow)
+    private var captureRect: CGRect {
+        let maxScaledSize = max(Constants.thumbWidth, Constants.thumbHeight) * Constants.expandedScale
+        // Uniform 1.5x stretch factor for both dimensions
+        let padding = (maxScaledSize * 1.5 - Constants.thumbHeight) / 2 + 10
+        return bounds.insetBy(dx: -padding, dy: -padding)
+    }
+
     private func thumbXPosition() -> CGFloat {
-        let trackWidth = bounds.width - Constants.thumbSize
-        return Constants.thumbSize / 2 + trackWidth * value
+        let trackWidth = bounds.width - Constants.thumbWidth
+        return Constants.thumbWidth / 2 + trackWidth * value
     }
 
     private func updateThumbPosition(animated: Bool) {
@@ -261,12 +344,20 @@ final class LiquidGlassSlider: UIControl {
 
     @objc private func displayLinkFired() {
         thumbAnimator?.step()
-        scaleAnimator?.step()
+        thumbScaleAnimator.step()
+        squashStretchAnimator.update(deltaTime: 1.0 / 120.0)
 
         let positionSettled = thumbAnimator?.isSettled ?? true
-        let scaleSettled = scaleAnimator?.isSettled ?? true
+        let scaleSettled = thumbScaleAnimator.isSettled
+        let squashSettled = !squashStretchAnimator.isActive
 
-        if !positionSettled || !scaleSettled {
+        // Capture backdrop when expanding (before Metal shows)
+        let willBeExpanded = thumbScaleAnimator.current > Constants.expandedThreshold
+        if willBeExpanded {
+            captureBackdropSnapshot()
+        }
+
+        if !positionSettled || !scaleSettled || !squashSettled {
             updateThumbFrame()
         }
     }
@@ -275,35 +366,40 @@ final class LiquidGlassSlider: UIControl {
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         let location = gesture.location(in: self)
-        let trackWidth = bounds.width - Constants.thumbSize
-        let newValue = ((location.x - Constants.thumbSize / 2) / trackWidth).clamped(to: 0...1)
+        let trackWidth = bounds.width - Constants.thumbWidth
+        let newValue = ((location.x - Constants.thumbWidth / 2) / trackWidth).clamped(to: 0...1)
 
         value = newValue
         thumbAnimator?.target = CGPoint(x: thumbXPosition(), y: 0)
 
-        // Quick scale pop
-        scaleAnimator?.target = 1.15
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.scaleAnimator?.target = 1.0
+        // Quick scale pop for feedback
+        thumbScaleAnimator.target = Constants.expandedScale
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            self.thumbScaleAnimator.target = 1.0
         }
     }
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         let location = gesture.location(in: self)
-        let trackWidth = bounds.width - Constants.thumbSize
-        let newValue = ((location.x - Constants.thumbSize / 2) / trackWidth).clamped(to: 0...1)
+        let trackWidth = bounds.width - Constants.thumbWidth
+        let newValue = ((location.x - Constants.thumbWidth / 2) / trackWidth).clamped(to: 0...1)
+
+        // Update squash/stretch animator
+        squashStretchAnimator.handlePan(gesture, in: self)
 
         switch gesture.state {
         case .began:
             isDragging = true
-            scaleAnimator?.target = 1.2
+            // Expand blob on drag start
+            thumbScaleAnimator.target = Constants.expandedScale
         case .changed:
             value = newValue
             thumbAnimator?.setPosition(CGPoint(x: thumbXPosition(), y: 0), animated: false)
             updateThumbFrame()
         case .ended, .cancelled:
             isDragging = false
-            scaleAnimator?.target = 1.0
+            // Collapse blob on drag end
+            thumbScaleAnimator.target = 1.0
         default:
             break
         }
@@ -319,6 +415,93 @@ final class LiquidGlassSlider: UIControl {
                 thumbAnimator?.target = CGPoint(x: thumbXPosition(), y: 0)
             }
         }
+    }
+
+    // MARK: - Metal Uniforms
+
+    private func updateUniforms() {
+        guard let renderer = renderer else { return }
+        // Zero out SDF uniforms (blob is UIKit, not shader)
+        renderer.sdf1Uniforms = SdfUniforms()
+        renderer.sdf2Uniforms = SdfUniforms()
+    }
+
+    private func updateUniformsGeometry(thumbFrame: CGRect) {
+        guard let renderer = renderer else { return }
+
+        let captureArea = captureRect
+        guard captureArea.width > 0 && captureArea.height > 0 else { return }
+        guard thumbFrame.width > 0 && thumbFrame.height > 0 else { return }
+
+        let scale = metalView?.contentScaleFactor ?? 1.0
+        let pillRadius = min(thumbFrame.width, thumbFrame.height) / 2
+
+        // View size matches capture area
+        renderer.glassUniforms.viewSize = SIMD2<Float>(
+            Float(captureArea.width * scale),
+            Float(captureArea.height * scale)
+        )
+
+        // Glass origin = thumb position within capture area
+        let thumbOriginInCapture = CGPoint(
+            x: thumbFrame.origin.x - captureArea.origin.x,
+            y: thumbFrame.origin.y - captureArea.origin.y
+        )
+        renderer.glassUniforms.glassOrigin = SIMD2<Float>(
+            Float(thumbOriginInCapture.x * scale),
+            Float(thumbOriginInCapture.y * scale)
+        )
+
+        // Glass size is the thumb size
+        renderer.glassUniforms.glassSize = SIMD2<Float>(
+            Float(thumbFrame.width * scale),
+            Float(thumbFrame.height * scale)
+        )
+
+        renderer.glassUniforms.cornerRadius = Float(pillRadius * scale)
+        renderer.glassUniforms.refractionStrength = Float(configuration.refractionStrength)
+        renderer.glassUniforms.specularIntensity = Float(configuration.specularIntensity)
+        renderer.glassUniforms.scrollVelocity = squashStretchAnimator.normalizedVelocity
+        renderer.glassUniforms.time = Float(CACurrentMediaTime())
+    }
+
+    // MARK: - Backdrop Capture
+
+    private func captureBackdropSnapshot() {
+        guard let superview = superview,
+              let pool = texturePool,
+              bounds.width > 0 && bounds.height > 0 else { return }
+
+        let scale = metalView?.contentScaleFactor ?? 2.0
+        let captureArea = captureRect
+
+        guard let context = pool.getContext(size: captureArea.size, scale: scale) else { return }
+
+        pool.lockForCPU()
+
+        let captureRectInSuperview = convert(captureArea, to: superview)
+
+        // Hide Metal and thumb background during capture
+        metalContainerView?.isHidden = true
+        thumbBackground?.isHidden = true
+
+        context.saveGState()
+        context.translateBy(x: -captureRectInSuperview.origin.x * scale, y: -captureRectInSuperview.origin.y * scale)
+        context.scaleBy(x: scale, y: scale)
+        superview.layer.render(in: context)
+        context.restoreGState()
+
+        // Restore visibility using staggered thresholds
+        let thumbScale = thumbScaleAnimator.current
+        let shouldShowMetal = thumbScale > Constants.metalThreshold && hasValidBackdrop
+        metalContainerView?.isHidden = !shouldShowMetal
+        let showGray = thumbScale < Constants.grayThreshold
+        thumbBackground?.isHidden = !showGray
+
+        pool.unlockForCPU()
+
+        renderer?.backdropTexture = pool.getTexture()
+        hasValidBackdrop = true
     }
 
     // MARK: - Configuration

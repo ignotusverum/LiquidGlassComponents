@@ -51,7 +51,7 @@ namespace GlassEffects {
     constant float paddingPercent = 0.08;
 
     // Chromatic Aberration & Smear (% of blob height)
-    constant float smearPercent = 0.04;
+    constant float smearPercent = 0.025;
     constant float chromaticPercent = 0.02;
     constant float smearSpacing = 0.5;
 
