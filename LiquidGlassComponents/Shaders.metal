@@ -15,6 +15,7 @@ struct GlassUniforms {
     float  cornerRadius;
     float  refractionStrength;
     float  specularIntensity;
+    float  refractionZonePercent;  // default 0.40, switches use 0.25
     float2 scrollVelocity;  // normalized velocity (-1 to 1) for slime deformation
     float  time;            // CACurrentMediaTime() for wobble animation
     float  _padding;        // alignment
@@ -46,7 +47,7 @@ namespace GlassEffects {
     constant float glassRefractiveIndex = 1.5;
     constant float proximityEasing = 0.6;
     constant float incidentAngleMultiplier = 1.4;
-    constant float refractionZonePercent = 0.55;
+    constant float refractionZonePercent = 0.35;
     constant float refractionMultiplier = 12.0;
     constant float paddingPercent = 0.08;
 
@@ -87,7 +88,6 @@ namespace GlassEffects {
     constant float sdfBlendFactor = 0.8;
 
     // Squircle (unselected tabs)
-    constant float squircleExponent = 4.0;
     constant float unselectedFillOuter = 5.0;
     constant float unselectedFillInner = -10.0;
     constant float3 unselectedTint = float3(0.1);
@@ -508,7 +508,7 @@ fragment float4 liquidGlassTabBarFragment(
     // Edge proximity (1 at edge, 0 toward center)
     float distFromEdge = -glassSdf;
     float maxDist = min(halfSize.x, halfSize.y);
-    float refractionZoneWidth = maxDist * GlassEffects::refractionZonePercent;
+    float refractionZoneWidth = maxDist * glass.refractionZonePercent;
     float proximity = 1.0 - saturate(distFromEdge / refractionZoneWidth);
     float easedProximity = pow(proximity, GlassEffects::proximityEasing);
 

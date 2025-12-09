@@ -12,9 +12,9 @@ final class LiquidGlassSwitcher: UIControl {
         static let trackHeight: CGFloat = 28
         static let thumbWidth: CGFloat = 39
         static let thumbHeight: CGFloat = 24
-        static let thumbPadding: CGFloat = 2
-      static let expandedScaleX: CGFloat = 1.5  // 100% wider - extends beyond track
-        static let expandedScaleY: CGFloat = 1.4  // 80% taller - extends beyond track
+        static let thumbPadding: CGFloat = 0
+        static let expandedScaleX: CGFloat = 1.6  // 100% wider - extends beyond track
+        static let expandedScaleY: CGFloat = 1.6  // 80% taller - extends beyond track
         static let expandedThreshold: CGFloat = 1.3
     }
 
@@ -494,6 +494,7 @@ final class LiquidGlassSwitcher: UIControl {
         renderer.glassUniforms.cornerRadius = Float(pillRadius * scale)
         renderer.glassUniforms.refractionStrength = Float(configuration.refractionStrength)
         renderer.glassUniforms.specularIntensity = Float(configuration.specularIntensity)
+        renderer.glassUniforms.refractionZonePercent = 0.25  // Reduced for switches
         renderer.glassUniforms.scrollVelocity = squashStretchAnimator.normalizedVelocity
         renderer.glassUniforms.time = Float(CACurrentMediaTime())
     }
