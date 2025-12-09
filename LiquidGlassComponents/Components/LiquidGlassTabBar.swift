@@ -100,6 +100,7 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
     // Pending collapse work item (to cancel on new gesture)
     private var pendingCollapseWork: DispatchWorkItem?
 
+
     // MARK: - Double Tap Detection
 
     private var lastTapTime: TimeInterval = 0
@@ -132,6 +133,12 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
         clipsToBounds = false
         layer.cornerCurve = .continuous
 
+        // Add shadow
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.15
+        layer.shadowOffset = CGSize(width: 0, height: 2)
+        layer.shadowRadius = 8
+
         setupBackdropLayer()
         setupTintLayer()
         setupMetalView()
@@ -153,23 +160,22 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
     }
 
     private func setupBackdropLayer() {
-        guard BackdropLayerWrapper.isAvailable() else {
-            print("CABackdropLayer not available, using fallback")
-            return
+        // Add CABackdropLayer first if available (for pill-shaped tab bar blur)
+        if BackdropLayerWrapper.isAvailable() {
+            backdropLayer = BackdropLayerWrapper.createBackdropLayer(
+                withFrame: bounds,
+                blurIntensity: configuration.blurIntensity,
+                saturation: configuration.saturationBoost,
+                scale: configuration.blurScale
+            )
+
+            if let backdrop = backdropLayer {
+                backdrop.cornerRadius = configuration.cornerRadius
+                backdrop.masksToBounds = true
+                layer.insertSublayer(backdrop, at: 0)
+            }
         }
 
-        backdropLayer = BackdropLayerWrapper.createBackdropLayer(
-            withFrame: bounds,
-            blurIntensity: configuration.blurIntensity,
-            saturation: configuration.saturationBoost,
-            scale: configuration.blurScale
-        )
-
-        if let backdrop = backdropLayer {
-            backdrop.cornerRadius = configuration.cornerRadius
-            backdrop.masksToBounds = true
-            layer.insertSublayer(backdrop, at: 0)
-        }
     }
 
     private func setupTintLayer() {
@@ -242,19 +248,19 @@ final class LiquidGlassTabBar: UIView, UIGestureRecognizerDelegate {
     private func setupEdgeLayer() {
         edgeLayer = CAGradientLayer()
         edgeLayer.colors = [
-            UIColor.white.withAlphaComponent(0.4).cgColor,
-            UIColor.white.withAlphaComponent(0.1).cgColor,
-            UIColor.clear.cgColor
+            UIColor.white.withAlphaComponent(0.5).cgColor,
+            UIColor.white.withAlphaComponent(0.2).cgColor,
+            UIColor.white.withAlphaComponent(0.1).cgColor
         ]
-        edgeLayer.locations = [0, 0.3, 1]
+        edgeLayer.locations = [0, 0.4, 1]
         edgeLayer.startPoint = CGPoint(x: 0, y: 0)
         edgeLayer.endPoint = CGPoint(x: 1, y: 1)
         edgeLayer.cornerRadius = configuration.cornerRadius
         edgeLayer.masksToBounds = true
 
-        // Create border mask
+        // Create border mask with slightly thicker stroke
         let borderMask = CAShapeLayer()
-        borderMask.lineWidth = 2
+        borderMask.lineWidth = 1.5
         borderMask.fillColor = nil
         borderMask.strokeColor = UIColor.white.cgColor
         edgeLayer.mask = borderMask
