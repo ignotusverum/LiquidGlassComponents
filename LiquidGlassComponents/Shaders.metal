@@ -18,7 +18,7 @@ struct GlassUniforms {
     float  refractionZonePercent;  // default 0.40, switches use 0.25
     float2 scrollVelocity;  // normalized velocity (-1 to 1) for slime deformation
     float  time;            // CACurrentMediaTime() for wobble animation
-    float  _padding;        // alignment
+    float  edgeIntensity;   // 0 = no edge, 1 = full edge effects
 };
 
 struct SdfUniforms {
@@ -91,6 +91,12 @@ namespace GlassEffects {
     constant float unselectedFillOuter = 5.0;
     constant float unselectedFillInner = -10.0;
     constant float3 unselectedTint = float3(0.1);
+
+    // Squash/Stretch Deformation
+    constant float deformWidthMin = 0.92;
+    constant float deformWidthMax = 1.08;
+    constant float deformHeightMin = 0.94;
+    constant float deformHeightMax = 1.06;
 }
 
 // MARK: - SDF Functions
@@ -130,9 +136,9 @@ float sdSquashStretch(
     float widthMult  = 1.0 + velocityX * deformAmount;
     float heightMult = 1.0 - velocityX * deformAmount * 0.75;  // Volume preservation
 
-    // Safety limits
-    widthMult  = clamp(widthMult, 0.65, 1.5);
-    heightMult = clamp(heightMult, 0.75, 1.35);
+    // Safety limits (5-10% max deformation)
+    widthMult  = clamp(widthMult, GlassEffects::deformWidthMin, GlassEffects::deformWidthMax);
+    heightMult = clamp(heightMult, GlassEffects::deformHeightMin, GlassEffects::deformHeightMax);
 
     float2 deformedHalfSize = float2(
         halfSize.x * widthMult,
@@ -143,7 +149,7 @@ float sdSquashStretch(
     float offset = halfSize.x * (widthMult - 1.0) * 0.25;
     float2 adjustedPos = pos - float2(offset, 0.0);
 
-    float radius = min(cornerRadius, min(deformedHalfSize.x, deformedHalfSize.y));
+    float radius = min(deformedHalfSize.x, deformedHalfSize.y);  // True pill shape
     float2 q = abs(adjustedPos) - deformedHalfSize + radius;
     return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
 }
@@ -399,30 +405,48 @@ float3 applyUnselectedFills(float3 color, float2 pixelPos, constant TabUniforms 
 // MARK: - Edge Effects
 
 /**
- Calculates Fresnel highlights and edge effects.
+ Calculates Fresnel highlights and edge effects with directional masking.
  @param glassSdf Signed distance to glass edge
  @param easedProximity Eased edge proximity value
+ @param intensity Dynamic intensity multiplier (0 = no edges, 1 = full)
+ @param relativePos Position relative to glass center (for directional masking)
  @return RGB color contribution from edge effects
  @note Fresnel effect causes increased reflectivity at grazing angles.
-       Schlick's approximation: F(θ) = F0 + (1-F0)(1-cosθ)^5
-       F0 ≈ 0.04 for glass, ≈ 0.02 for water.
+       When intensity > 0, applies directional mask: visible at bottom/bottom-right,
+       fades to invisible at top-left with smooth transition.
  */
-float3 calculateEdgeEffects(float glassSdf, float easedProximity) {
+float3 calculateEdgeEffects(float glassSdf, float easedProximity, float intensity, float2 relativePos) {
+    if (intensity <= 0.0) return float3(0.0);
+
+    // Directional mask: visible at bottom/bottom-right, fades toward top-left
+    // In texture coords: +Y is down, so bottom = +Y, right = +X
+    float2 normDir = normalize(relativePos + 0.001);
+    // Dot with bottom-right direction (1, 1) normalized
+    float diagonal = dot(normDir, normalize(float2(1.0, 1.0)));
+    // Smooth transition: -1 (top-left) -> 0, +1 (bottom-right) -> 1
+    float highlightMask = smoothstep(-0.3, 0.7, diagonal);
+    // Inverse mask for dark shadow on top-left
+    float shadowMask = smoothstep(0.3, -0.7, diagonal);
+
     float3 effects = float3(0.0);
 
-    // Fresnel highlight
+    // Fresnel highlight (bottom-right)
     float fresnel = pow(easedProximity, GlassEffects::fresnelExponent) * GlassEffects::fresnelIntensity;
-    effects += float3(1.0) * fresnel;
+    effects += float3(1.0) * fresnel * highlightMask;
 
-    // Edge highlight
+    // Edge highlight (bottom-right)
     float edgeMask = smoothstep(GlassEffects::edgeMaskWidth, 0.0, abs(glassSdf));
-    effects += float3(1.0) * edgeMask * GlassEffects::edgeMaskIntensity;
+    effects += float3(1.0) * edgeMask * GlassEffects::edgeMaskIntensity * highlightMask;
 
-    // Border
+    // Border highlight (bottom-right)
     float border = smoothstep(GlassEffects::borderOuter, 0.0, abs(glassSdf)) - smoothstep(GlassEffects::borderInner, 0.0, abs(glassSdf));
-    effects += float3(1.0) * border * GlassEffects::borderIntensity;
+    effects += float3(1.0) * border * GlassEffects::borderIntensity * highlightMask;
 
-    return effects;
+    // Dark shadow on top-left edges
+    float shadowEdge = smoothstep(GlassEffects::edgeMaskWidth, 0.0, abs(glassSdf));
+    effects -= float3(0.15) * shadowEdge * shadowMask;  // Subtract to darken
+
+    return effects * intensity;
 }
 
 // MARK: - Vertex Shader
@@ -533,7 +557,7 @@ fragment float4 liquidGlassTabBarFragment(
     );
 
     // Edge effects
-    color += calculateEdgeEffects(glassSdf, easedProximity);
+    color += calculateEdgeEffects(glassSdf, easedProximity, glass.edgeIntensity, relativePos);
 
     // Only apply SDF and tab effects if enabled
     if (sdfEnabled) {

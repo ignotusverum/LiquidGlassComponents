@@ -463,6 +463,7 @@ final class LiquidGlassSlider: UIControl {
         renderer.glassUniforms.specularIntensity = Float(configuration.specularIntensity)
         renderer.glassUniforms.scrollVelocity = squashStretchAnimator.normalizedVelocity
         renderer.glassUniforms.time = Float(CACurrentMediaTime())
+        renderer.glassUniforms.edgeIntensity = 1.0  // Full edge effects on slider blob
     }
 
     // MARK: - Backdrop Capture

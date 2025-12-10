@@ -15,7 +15,7 @@ struct GlassUniforms {
     var refractionZonePercent: Float = 0.40  // 4 bytes (offset 36) - switches use 0.25
     var scrollVelocity: SIMD2<Float>   // 8 bytes (offset 40) - for slime deformation
     var time: Float                    // 4 bytes (offset 48) - for wobble animation
-    var _padding2: Float = 0           // 4 bytes (offset 52) - align to 8-byte boundary
+    var edgeIntensity: Float = 1.0     // 4 bytes (offset 52) - 0=no edge, 1=full edge effects
     // Total: 56 bytes
 
     init() {
@@ -28,7 +28,7 @@ struct GlassUniforms {
         refractionZonePercent = 0.40
         scrollVelocity = .zero
         time = 0
-        _padding2 = 0
+        edgeIntensity = 1.0
     }
 }
 

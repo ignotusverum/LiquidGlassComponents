@@ -12,7 +12,7 @@ final class LiquidGlassSwitcher: UIControl {
         static let trackHeight: CGFloat = 28
         static let thumbWidth: CGFloat = 39
         static let thumbHeight: CGFloat = 24
-        static let thumbPadding: CGFloat = 4
+        static let thumbPadding: CGFloat = 3
         static let expandedScaleX: CGFloat = 1.6  // 100% wider - extends beyond track
         static let expandedScaleY: CGFloat = 1.6  // 80% taller - extends beyond track
         static let expandedThreshold: CGFloat = 1.3
@@ -39,7 +39,6 @@ final class LiquidGlassSwitcher: UIControl {
     private var trackContainer: UIView!
     private var trackBackdropLayer: CALayer?
     private var trackTintLayer: CALayer!
-    private var trackEdgeLayer: CAGradientLayer!
 
     // Gray blob (visible when collapsed)
     private var thumbBackground: UIView!
@@ -98,24 +97,12 @@ final class LiquidGlassSwitcher: UIControl {
         trackTintLayer = CALayer()
         trackTintLayer.backgroundColor = configuration.tintColor.withAlphaComponent(configuration.tintOpacity).cgColor
         trackContainer.layer.addSublayer(trackTintLayer)
-
-        // Edge highlight for glass effect
-        trackEdgeLayer = CAGradientLayer()
-        trackEdgeLayer.colors = [
-            UIColor.white.withAlphaComponent(0.4).cgColor,
-            UIColor.white.withAlphaComponent(0.1).cgColor,
-            UIColor.clear.cgColor
-        ]
-        trackEdgeLayer.locations = [0, 0.3, 1]
-        trackEdgeLayer.startPoint = CGPoint(x: 0, y: 0)
-        trackEdgeLayer.endPoint = CGPoint(x: 1, y: 1)
-        trackContainer.layer.addSublayer(trackEdgeLayer)
     }
 
     private func setupThumbBackground() {
-        // Gray blob background (visible when collapsed)
+        // White blob background (visible when collapsed, no shadow)
         thumbBackground = UIView()
-        thumbBackground.backgroundColor = UIColor.gray.withAlphaComponent(0.3)
+        thumbBackground.backgroundColor = UIColor.white
         thumbBackground.layer.cornerCurve = .continuous
         thumbBackground.isUserInteractionEnabled = false
         addSubview(thumbBackground)
@@ -237,22 +224,6 @@ final class LiquidGlassSwitcher: UIControl {
 
         trackTintLayer.frame = trackContainer.bounds
         trackTintLayer.cornerRadius = Constants.trackHeight / 2
-
-        // Edge layer with border mask
-        trackEdgeLayer.frame = trackContainer.bounds
-        trackEdgeLayer.cornerRadius = Constants.trackHeight / 2
-        trackEdgeLayer.masksToBounds = true
-
-        // Create border mask for edge highlight
-        let borderMask = CAShapeLayer()
-        borderMask.lineWidth = 1.5
-        borderMask.fillColor = nil
-        borderMask.strokeColor = UIColor.white.cgColor
-        borderMask.path = UIBezierPath(
-            roundedRect: trackContainer.bounds.insetBy(dx: 0.75, dy: 0.75),
-            cornerRadius: Constants.trackHeight / 2 - 0.75
-        ).cgPath
-        trackEdgeLayer.mask = borderMask
 
         // Position thumb
         updateThumbFrame()
@@ -497,6 +468,7 @@ final class LiquidGlassSwitcher: UIControl {
         renderer.glassUniforms.refractionZonePercent = 0.25  // Reduced for switches
         renderer.glassUniforms.scrollVelocity = squashStretchAnimator.normalizedVelocity
         renderer.glassUniforms.time = Float(CACurrentMediaTime())
+        renderer.glassUniforms.edgeIntensity = 1.0  // Same directional edge effects as slider
     }
 
     // MARK: - Backdrop Capture
