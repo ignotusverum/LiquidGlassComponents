@@ -13,8 +13,8 @@ final class LiquidGlassSwitcher: UIControl {
         static let thumbWidth: CGFloat = 39
         static let thumbHeight: CGFloat = 24
         static let thumbPadding: CGFloat = 3
-        static let expandedScaleX: CGFloat = 1.6  // 100% wider - extends beyond track
-        static let expandedScaleY: CGFloat = 1.6  // 80% taller - extends beyond track
+        static let expandedScaleX: CGFloat = 1.6
+        static let expandedScaleY: CGFloat = 1.6 
         static let expandedThreshold: CGFloat = 1.3
     }
 
