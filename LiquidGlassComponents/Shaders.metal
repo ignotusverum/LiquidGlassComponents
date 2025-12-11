@@ -93,8 +93,8 @@ namespace GlassEffects {
     constant float3 unselectedTint = float3(0.1);
 
     // Squash/Stretch Deformation
-    constant float deformWidthMin = 0.92;
-    constant float deformWidthMax = 1.08;
+    constant float deformWidthMin = 0.94;
+    constant float deformWidthMax = 1.06;
     constant float deformHeightMin = 0.94;
     constant float deformHeightMax = 1.06;
 }
@@ -146,7 +146,7 @@ float sdSquashStretch(
     );
 
     // Offset in movement direction (leading edge moves more)
-    float offset = halfSize.x * (widthMult - 1.0) * 0.25;
+    float offset = halfSize.x * (widthMult - 1.0) * 0.1;
     float2 adjustedPos = pos - float2(offset, 0.0);
 
     float radius = min(deformedHalfSize.x, deformedHalfSize.y);  // True pill shape
@@ -522,7 +522,7 @@ fragment float4 liquidGlassTabBarFragment(
         color += calculateSdfSpecular(pixelPos, sdf2, specular);
         color += specular * glass.specularIntensity * GlassEffects::specularMultiplier;
         float sdfAlpha = saturate(-sdfDist * GlassEffects::sdfAlphaSharpness);
-        return float4(color, sdfAlpha);
+        return float4(color * sdfAlpha, sdfAlpha);  // Premultiplied alpha
     }
 
     // Normal glass rendering (inside glass bounds)
@@ -569,7 +569,7 @@ fragment float4 liquidGlassTabBarFragment(
         color += specular * glass.specularIntensity * GlassEffects::specularMultiplier;
     }
 
-    return float4(color, alpha);
+    return float4(color * alpha, alpha);  // Premultiplied alpha
 }
 
 // MARK: - SDF Container Fragment Shader
@@ -612,5 +612,5 @@ fragment float4 liquidGlassSdfFragment(
 
     // SDF alpha based on distance (soft edge)
     float sdfAlpha = saturate(-sdfDist * GlassEffects::sdfAlphaSharpness);
-    return float4(color, sdfAlpha);
+    return float4(color * sdfAlpha, sdfAlpha);  // Premultiplied alpha
 }
