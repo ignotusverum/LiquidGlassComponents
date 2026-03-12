@@ -10,9 +10,22 @@
 		64AE35942EE228C2003BEB1B /* LiquidGlassComponents.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LiquidGlassComponents.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		64AE35C12EE228C2003BEB1B /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 64AE35932EE228C2003BEB1B /* LiquidGlassComponents */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		64AE35962EE228C2003BEB1B /* LiquidGlassComponents */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				64AE35C12EE228C2003BEB1B /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
+			);
 			path = LiquidGlassComponents;
 			sourceTree = "<group>";
 		};
