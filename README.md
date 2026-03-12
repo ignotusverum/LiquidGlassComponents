@@ -10,6 +10,8 @@ When Apple previewed Liquid Glass at WWDC, I wanted to understand how it works u
 
 The result is a hybrid rendering architecture that combines `CABackdropLayer` for real-time backdrop blur with Metal GPU shaders for refraction, specular highlights, and blob morphing.
 
+A more sophisticated version of this approach, applied to a full app, can be found in [my Telegram iOS fork](https://github.com/ignotusverum/Telegram-iOS/tree/fake-glass-v2).
+
 ## Components
 
 Four components to demonstrate the effect across different interaction patterns:
