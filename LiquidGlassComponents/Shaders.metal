@@ -19,6 +19,8 @@ struct GlassUniforms {
     float2 scrollVelocity;  // normalized velocity (-1 to 1) for slime deformation
     float  time;            // CACurrentMediaTime() for wobble animation
     float  edgeIntensity;   // 0 = no edge, 1 = full edge effects
+    float  verticalEdgeRefractionScale;  // 1.0 = full, 0.5 = half refraction on vertical edges
+    float  _padding;  // Alignment padding to 64 bytes
 };
 
 struct SdfUniforms {
@@ -540,10 +542,15 @@ fragment float4 liquidGlassTabBarFragment(
     float2 towardEdgeDir = normalize(relativePos + 0.001);
     float2 tangentDir = float2(-towardEdgeDir.y, towardEdgeDir.x);
 
+    // Attenuate refraction on vertical edges (left/right)
+    float verticalEdgeFactor = abs(towardEdgeDir.x);
+    float edgeScale = mix(1.0, glass.verticalEdgeRefractionScale, verticalEdgeFactor);
+    float adjustedProximity = proximity * edgeScale;
+
     // Refracted UV
     float2 refractedUV = calculateRefractedUV(
         uv, towardEdgeDir, glass.viewSize,
-        proximity, glass.refractionStrength,
+        adjustedProximity, glass.refractionStrength,
         kRefractionMultiplier, kPaddingAmount
     );
 

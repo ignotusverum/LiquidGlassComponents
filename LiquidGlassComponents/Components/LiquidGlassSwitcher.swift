@@ -469,6 +469,7 @@ final class LiquidGlassSwitcher: UIControl {
         renderer.glassUniforms.scrollVelocity = squashStretchAnimator.normalizedVelocity
         renderer.glassUniforms.time = Float(CACurrentMediaTime())
         renderer.glassUniforms.edgeIntensity = 1.0  // Same directional edge effects as slider
+        renderer.glassUniforms.verticalEdgeRefractionScale = 0.5  // Reduce refraction on vertical edges
     }
 
     // MARK: - Backdrop Capture

@@ -16,7 +16,9 @@ struct GlassUniforms {
     var scrollVelocity: SIMD2<Float>   // 8 bytes (offset 40) - for slime deformation
     var time: Float                    // 4 bytes (offset 48) - for wobble animation
     var edgeIntensity: Float = 1.0     // 4 bytes (offset 52) - 0=no edge, 1=full edge effects
-    // Total: 56 bytes
+    var verticalEdgeRefractionScale: Float = 1.0  // 4 bytes (offset 56) - 1.0=full, 0.5=half on vertical edges
+    var _padding: Float = 0  // 4 bytes (offset 60) - alignment padding
+    // Total: 64 bytes
 
     init() {
         viewSize = .zero
@@ -29,6 +31,7 @@ struct GlassUniforms {
         scrollVelocity = .zero
         time = 0
         edgeIntensity = 1.0
+        verticalEdgeRefractionScale = 1.0
     }
 }
 
